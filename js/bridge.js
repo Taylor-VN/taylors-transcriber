@@ -28,10 +28,41 @@
         .finally(() => clearTimeout(timer));
       if (!res.ok) return null;
       const cfg = await res.json();
-      return cfg && cfg.ok && cfg.bridge && cfg.token ? cfg : null;
+      // Returned even when the bridge is off: that answer still tells us our
+      // own server is serving the page, which rules static mode out.
+      return cfg && cfg.ok ? cfg : null;
     } catch (e) {
       return null; // opened as a file:// page, or no server — static mode
     }
+  }
+
+  /**
+   * Waits for the desktop shell to inject its js_api.
+   *
+   * pywebview attaches `window.pywebview.api` after the document loads, so a
+   * script that decides at parse time sees no bridge and writes the app off as
+   * static — which is why anything called during startup (the installed-font
+   * list) found no backend while everything called later worked.
+   */
+  function waitForNativeBridge(timeoutMs) {
+    if (hasNativeBridge()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('pywebviewready', onReady);
+        clearInterval(poll);
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const onReady = () => finish(hasNativeBridge());
+      // The event is the fast path; the poll covers shells that inject without
+      // firing it, and the timeout keeps a browser from waiting forever.
+      window.addEventListener('pywebviewready', onReady);
+      const poll = setInterval(() => { if (hasNativeBridge()) finish(true); }, 50);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+    });
   }
 
   function makeHttpApi(token) {
@@ -75,6 +106,18 @@
 
     const cfg = await fetchConfig();
     if (!cfg) {
+      // No server answered, so nothing can arrive later either: file:// page.
+      window.bridgeMode = 'static';
+      return 'static';
+    }
+
+    if (!cfg.bridge || !cfg.token) {
+      // Our server is serving the page but the HTTP bridge is off — the desktop
+      // shell, which passes js_api natively and injects it once loading ends.
+      if (await waitForNativeBridge(10000)) {
+        window.bridgeMode = 'native';
+        return 'native';
+      }
       window.bridgeMode = 'static';
       return 'static';
     }
