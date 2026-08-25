@@ -23,6 +23,7 @@ import uuid
 import webbrowser
 
 from transcriber import Transcriber
+from fonts import FontIndex
 
 try:
     import webview
@@ -184,6 +185,7 @@ class ExportApi:
         self.jobs = {}
         self._lock = threading.Lock()
         self.transcriber = Transcriber()
+        self.font_index = FontIndex()
 
     # --- capability probe -------------------------------------------------
     def get_capabilities(self):
@@ -242,6 +244,53 @@ class ExportApi:
 
     def runtime_install_status(self, job_id):
         return self.transcriber.runtime_install_status(job_id)
+
+    # --- installed fonts ---------------------------------------------------
+    def fonts_list(self, refresh=False):
+        """
+        Family names of every installed font, for the typography dropdown.
+
+        Families whose name starts with a dot are Apple's internal UI faces
+        (".SF NS", ".Aqua Kana"); they are not licensed for use as a caption
+        font and every other font menu hides them, so this does too. Resolving
+        one by name still works — only the offered list is filtered.
+        """
+        try:
+            families = sorted({
+                f['family'] for f in self.font_index.faces(refresh=bool(refresh))
+                if f.get('family') and not f['family'].startswith('.')
+            }, key=str.lower)
+            return {'ok': True, 'families': families}
+        except Exception as e:
+            return {'ok': False, 'error': str(e), 'families': []}
+
+    def font_resolve(self, name):
+        """
+        Locates an installed font by Premiere's PostScript name and returns its
+        bytes, so the page can register it with FontFace and draw captions in
+        the real typeface instead of silently falling back to sans-serif.
+        """
+        try:
+            face = self.font_index.resolve(name)
+            if not face:
+                return {'ok': False, 'error': 'not_installed', 'requested': name}
+            with open(face['path'], 'rb') as fh:
+                data = fh.read()
+            ext = os.path.splitext(face['path'])[1].lower()
+            fmt = {'.otf': 'opentype', '.ttf': 'truetype',
+                   '.ttc': 'collection', '.otc': 'collection'}.get(ext, 'opentype')
+            return {
+                'ok': True,
+                'requested': name,
+                'postscript': face.get('postscript', ''),
+                'family': face.get('family', ''),
+                'subfamily': face.get('subfamily', ''),
+                'format': fmt,
+                'path': face['path'],
+                'data': base64.b64encode(data).decode('ascii'),
+            }
+        except Exception as e:
+            return {'ok': False, 'error': str(e), 'requested': name}
 
     # --- export lifecycle -------------------------------------------------
     def begin_export(self, meta):

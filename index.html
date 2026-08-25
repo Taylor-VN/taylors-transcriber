@@ -363,15 +363,23 @@
         <div class="style-group">
           <label class="group-label">Typography</label>
           <div class="input-row">
-            <select id="fontFamily" class="input-select flex-1">
-              <option value="Inter">Inter</option>
-              <option value="Montserrat">Montserrat</option>
-              <option value="Roboto">Roboto</option>
-              <option value="Impact">Impact</option>
-              <option value="Outfit">Outfit</option>
-              <option value="Courier New">Courier</option>
-            </select>
+            <!-- js/fontPicker.js wraps this box in a dropdown of every installed
+                 font. It stays a free-text combobox rather than a <select>: an
+                 imported Premiere style names a face the list cannot enumerate,
+                 and a <select> would silently drop it. -->
+            <input type="text" id="fontFamily" class="input-text flex-1"
+                   value="Inter" autocomplete="off" spellcheck="false" title="Font family">
             <input type="number" id="fontSize" class="input-num" value="42" min="12" max="140" title="Font Size (px)">
+          </div>
+          <div class="input-row">
+            <label class="checkbox-label" title="Tracking, in 1/1000 em — the unit Premiere uses">Tracking</label>
+            <input type="range" id="letterSpacing" min="-200" max="800" step="5" value="0" class="input-range">
+            <span id="letterSpacingVal" class="range-val">0</span>
+          </div>
+          <div class="input-row">
+            <label class="checkbox-label" title="Line spacing as a multiple of the font size">Leading</label>
+            <input type="range" id="lineHeight" min="0.7" max="2.5" step="0.05" value="1.25" class="input-range">
+            <span id="lineHeightVal" class="range-val">1.25</span>
           </div>
           <div class="input-row">
             <label class="checkbox-label">
@@ -965,6 +973,9 @@
 
   <script src="js/bridge.js"></script>
   <script src="js/menu.js"></script>
+  <script src="js/premiereStyle.js"></script>
+  <script src="js/fontLoader.js"></script>
+  <script src="js/fontPicker.js"></script>
   <script src="js/presetParser.js"></script>
   <script src="js/subtitleManager.js"></script>
   <script src="js/projectManager.js"></script>

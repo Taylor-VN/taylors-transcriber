@@ -199,6 +199,12 @@ class PresetParser {
       const parseError = xmlDoc.querySelector('parsererror');
       const doc = parseError ? null : xmlDoc;
 
+      // A real Premiere .prtextstyle keeps none of its typography in the XML
+      // tags — it is all in a base64 FlatBuffers blob. Try that first; the tag
+      // sweep below only ever matches this app's own exported presets.
+      const native = this.parsePremiereTextStyle(doc, trimmed, baseName);
+      if (native) return native;
+
       const lookup = (names, fallback) => {
         const fromXml = doc ? this.findValue(doc, names) : null;
         if (fromXml !== null && fromXml !== undefined && fromXml !== '') return fromXml;
@@ -225,9 +231,12 @@ class PresetParser {
       const preset = {
         name: lookup(['PresetName', 'StyleName', 'Name'], baseName) || baseName,
         fontFamily: lookup(['FontFamily', 'TextFont', 'FontName', 'Font', 'fontFamily'], 'Inter'),
+        fontPostScriptName: lookup(['FontPostScriptName', 'PostScriptName', 'fontPostScriptName'], '') || '',
+        letterSpacing: this.toNumber(lookup(['Tracking', 'LetterSpacing', 'letterSpacing'], null)) ?? 0,
+        lineHeight: this.toNumber(lookup(['LineHeight', 'Leading', 'lineHeight'], null)) ?? 1.25,
         // Premiere point sizes are authored against a 1080-tall frame already.
         fontSize: fontSize !== null ? Math.round(fontSize) : 66,
-        fontWeightBold: this.toBool(lookup(['Bold', 'FontBold', 'fontWeightBold'], null)) !== false,
+        fontWeightBold: this.toBool(lookup(['Bold', 'FontBold', 'fontWeightBold'], null)) === true,
         fontStyleItalic: this.toBool(lookup(['Italic', 'FontItalic', 'fontStyleItalic'], null)) === true,
         textUppercase: this.toBool(lookup(['AllCaps', 'Uppercase', 'textUppercase'], null)) === true,
         fillColor: this.parseColorString(fillColorRaw) || '#ffea00',
@@ -254,32 +263,130 @@ class PresetParser {
     }
   }
 
+  /**
+   * Decodes a genuine Premiere Pro .prtextstyle.
+   *
+   * Returns null when the document is not one, so the caller can fall back to
+   * the generic tag sweep. Fields Premiere does not store — background box,
+   * animation — keep this app's defaults rather than being invented.
+   */
+  parsePremiereTextStyle(doc, rawText, baseName) {
+    if (typeof PremiereStyleDecoder === 'undefined') return null;
+
+    const b64 = PremiereStyleDecoder.findSourceTextBase64(doc)
+      || PremiereStyleDecoder.findSourceTextBase64InRaw(rawText);
+    if (!b64) return null;
+
+    let decoded;
+    try {
+      decoded = PremiereStyleDecoder.decodeSourceText(b64);
+    } catch (e) {
+      console.warn('Premiere Source Text blob could not be decoded:', e);
+      return null;
+    }
+
+    const run = (decoded.runs || [])[0] || {};
+    const fontName = (decoded.fonts || [])[0] || '';
+    const styleName = PremiereStyleDecoder.readStyleName(doc);
+    const transform = PremiereStyleDecoder.readTransform(doc);
+
+    const base = { ...this.defaultPresets['netflix_clean'] };
+    const preset = {
+      ...base,
+      id: 'premiere_' + Date.now(),
+      name: styleName || baseName,
+
+      // The PostScript name is what Premiere means; the font loader turns it
+      // into something canvas can draw, so keep it verbatim.
+      fontFamily: fontName || base.fontFamily,
+      fontPostScriptName: fontName || '',
+      // Weight and slant live in the face itself ("…-Bold", "…-Italic"), not in
+      // a flag, so synthesising either would double up on the real font.
+      fontWeightBold: false,
+      fontStyleItalic: false,
+      textUppercase: false,
+
+      fontSize: run.fontSize > 0 ? Math.round(run.fontSize) : base.fontSize,
+      strokeWidth: run.strokeWidth > 0 ? run.strokeWidth : 0,
+      enableStroke: (run.strokeWidth || 0) > 0,
+
+      fillColor: decoded.colors.a || base.fillColor,
+      strokeColor: decoded.colors.b || '#000000',
+
+      // Shadow and background are in the blob but not yet positively mapped to
+      // fields. Inheriting a base preset's values would silently paint effects
+      // the file never asked for, so both stay off until they can be read.
+      enableShadow: false,
+      enableBgBox: false,
+
+      // Premiere positions text by a normalised anchor rather than a margin.
+      ...this.alignmentFromTransform(transform),
+
+      // Everything the blob carries, kept so an operator can see exactly what
+      // was in the file and so the remaining fields can be mapped later.
+      premiere: {
+        fonts: decoded.fonts,
+        numbers: decoded.numbers,
+        flags: decoded.flags,
+        transform,
+        runs: decoded.runs
+      }
+    };
+
+    return this.normalizePreset(preset, baseName);
+  }
+
+  /**
+   * Converts Premiere's normalised Position (0..1 of frame) into this app's
+   * align + margin model. Only the vertical half is meaningful here, since the
+   * renderer centres horizontally.
+   */
+  alignmentFromTransform(transform) {
+    const pos = transform && transform['Position'];
+    if (!pos || !/:/.test(pos)) return {};
+    const [, yStr] = pos.split(':');
+    const y = parseFloat(yStr);
+    if (isNaN(y)) return {};
+
+    // Margin is expressed against the 1080-tall reference frame the renderer
+    // scales from, measured to the text block's centre.
+    if (y <= 0.34) return { align: 'top-center', bottomMargin: Math.round(y * 1080) };
+    if (y >= 0.66) return { align: 'bottom-center', bottomMargin: Math.round((1 - y) * 1080) };
+    return { align: 'center' };
+  }
+
   /** Search the document for a tag, a Name="..." parameter node, or an attribute. */
   findValue(doc, names) {
-    const wanted = names.map(n => n.toLowerCase());
     const all = doc.getElementsByTagName('*');
 
-    for (let i = 0; i < all.length; i++) {
-      const el = all[i];
-      const tag = (el.localName || el.nodeName || '').toLowerCase();
+    // Names are tried in the order given, and each name is tried by tag first,
+    // then by Parameter Name=, then by a same-named attribute. Sweeping all
+    // three at once meant a generic candidate like "Name" or "Color" matched
+    // the first unrelated node in the document and won over an exact tag.
+    for (const name of names) {
+      const w = name.toLowerCase();
 
-      if (wanted.includes(tag)) {
-        const direct = this.elementValue(el);
-        if (direct) return direct;
+      for (let i = 0; i < all.length; i++) {
+        const tag = (all[i].localName || all[i].nodeName || '').toLowerCase();
+        if (tag === w) {
+          const direct = this.elementValue(all[i]);
+          if (direct) return direct;
+        }
       }
 
       // <Parameter Name="FontSize"><Value>72</Value></Parameter>
-      const nameAttr = (el.getAttribute('Name') || el.getAttribute('name') || '').toLowerCase();
-      if (nameAttr && wanted.includes(nameAttr)) {
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        const nameAttr = (el.getAttribute('Name') || el.getAttribute('name') || '').toLowerCase();
+        if (nameAttr !== w) continue;
         const valueAttr = el.getAttribute('Value') || el.getAttribute('value');
-        if (valueAttr) return valueAttr.trim();
+        if (valueAttr && valueAttr.trim()) return valueAttr.trim();
         const direct = this.elementValue(el);
         if (direct) return direct;
       }
 
-      // Attribute named directly after the property
-      for (const w of wanted) {
-        for (const attr of el.attributes || []) {
+      for (let i = 0; i < all.length; i++) {
+        for (const attr of all[i].attributes || []) {
           if (attr.name.toLowerCase() === w && attr.value.trim()) return attr.value.trim();
         }
       }
@@ -363,10 +470,16 @@ class PresetParser {
 
     const parts = s.split(/[\s,]+/).map(p => parseFloat(p)).filter(n => !isNaN(n));
     if (parts.length >= 3) {
-      // Premiere writes normalised floats; anything <= 1 across the board is 0-1.
-      const isFloat = parts.slice(0, 3).every(n => n >= 0 && n <= 1) &&
-                      parts.slice(0, 3).some(n => n > 0 && n < 1);
-      const chans = parts.length >= 4 && parts[0] <= 1 && !isFloat
+      // Premiere writes normalised floats. Detect them by the notation rather
+      // than by value: "1.0 1.0 1.0" is white, but treating it as bytes gives
+      // #010101, which is why pure colours used to import as near-black.
+      const written = s.split(/[\s,]+/).filter(t => t !== '');
+      const looksDecimal = written.slice(0, 3).some(t => /\./.test(t));
+      const inUnitRange = parts.slice(0, 3).every(n => n >= 0 && n <= 1);
+      const isFloat = inUnitRange && (looksDecimal || parts.slice(0, 3).every(n => n === 0 || n === 1));
+      // Four byte channels are alpha-first in Premiere's own writing, so a
+      // leading 255 is opacity rather than the red channel.
+      const chans = parts.length >= 4 && !isFloat
         ? parts.slice(1, 4)   // ARGB byte order
         : parts.slice(0, 3);
       const toHex = (n) => {
@@ -376,7 +489,7 @@ class PresetParser {
       return '#' + chans.map(toHex).join('');
     }
 
-    // Packed integer (e.g. 4294958336 = 0xFFFFEA00)
+    // Packed ARGB integer (e.g. 4294958336 = 0xFFFFDD00 -> #ffdd00)
     if (/^\d+$/.test(s)) {
       const num = parseInt(s, 10);
       if (num > 0xFFFFFF) return '#' + (num & 0xFFFFFF).toString(16).padStart(6, '0');
@@ -395,7 +508,14 @@ class PresetParser {
       id: presetObj.id || 'custom_' + Date.now(),
       name: presetObj.name || nameFallback || 'Imported Premiere Preset',
       fontFamily: presetObj.fontFamily || 'Inter',
+      // Premiere names the exact face; kept alongside the family so the font
+      // loader can ask for it by the name the file actually used.
+      fontPostScriptName: presetObj.fontPostScriptName || '',
       fontSize: num(presetObj.fontSize, 66),
+      // Tracking is in 1/1000 em, matching Premiere's own units. Leading is a
+      // multiple of the font size; 0 means "use the font's natural line height".
+      letterSpacing: num(presetObj.letterSpacing, 0),
+      lineHeight: num(presetObj.lineHeight, 1.25),
       fontWeightBold: presetObj.fontWeightBold !== undefined ? !!presetObj.fontWeightBold : true,
       fontStyleItalic: !!presetObj.fontStyleItalic,
       textUppercase: !!presetObj.textUppercase,
@@ -414,7 +534,8 @@ class PresetParser {
       align: this.normalizeAlign(presetObj.align),
       bottomMargin: num(presetObj.bottomMargin, 75),
       animationPreset: ['none', 'fade', 'pop', 'karaoke'].includes(presetObj.animationPreset)
-        ? presetObj.animationPreset : 'none'
+        ? presetObj.animationPreset : 'none',
+      premiere: presetObj.premiere || null
     };
   }
 
@@ -428,7 +549,10 @@ class PresetParser {
   <TextPreset Name="${esc(preset.name)}">
     <PresetName>${esc(preset.name)}</PresetName>
     <FontFamily>${esc(preset.fontFamily)}</FontFamily>
+    <FontPostScriptName>${esc(preset.fontPostScriptName || '')}</FontPostScriptName>
     <FontSize>${esc(preset.fontSize)}</FontSize>
+    <Tracking>${esc(preset.letterSpacing || 0)}</Tracking>
+    <LineHeight>${esc(preset.lineHeight !== undefined ? preset.lineHeight : 1.25)}</LineHeight>
     <Bold>${esc(!!preset.fontWeightBold)}</Bold>
     <Italic>${esc(!!preset.fontStyleItalic)}</Italic>
     <AllCaps>${esc(!!preset.textUppercase)}</AllCaps>

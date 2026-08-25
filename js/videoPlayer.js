@@ -420,13 +420,21 @@ class VideoPlayerController {
     const fontWeight = preset.fontWeightBold ? 'bold ' : 'normal ';
 
     ctx.save();
-    ctx.font = `${fontStyle}${fontWeight}${fontSize}px "${preset.fontFamily}", sans-serif`;
+    // Premiere names the exact face ("Specsavers-Regular"), which the font
+    // loader registers under that name. Prefer it over the family so the right
+    // weight is drawn rather than a synthesised one.
+    const family = preset.fontPostScriptName || preset.fontFamily;
+    ctx.font = `${fontStyle}${fontWeight}${fontSize}px "${family}", "${preset.fontFamily}", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
+    // Tracking is authored in 1/1000 em, the same unit Premiere shows.
+    const trackingPx = ((preset.letterSpacing || 0) / 1000) * fontSize;
+    if ('letterSpacing' in ctx) ctx.letterSpacing = `${trackingPx}px`;
+
     const maxTextWidth = w * 0.85;
     const lines = this.wrapText(ctx, text, maxTextWidth);
-    const lineHeight = fontSize * 1.25;
+    const lineHeight = fontSize * (preset.lineHeight > 0 ? preset.lineHeight : 1.25);
     const totalTextHeight = lines.length * lineHeight;
 
     const margin = (preset.bottomMargin || 50) * scaleFactor;

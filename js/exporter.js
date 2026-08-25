@@ -53,7 +53,9 @@ class AlphaExporter {
   async ensureFontsReady(preset) {
     if (!document.fonts) return { ready: true, missing: [] };
     try {
-      const family = preset && preset.fontFamily;
+      // drawSubtitleFrame prefers the PostScript face an imported Premiere
+      // style names, so that is the one the export has to have loaded.
+      const family = preset && (preset.fontPostScriptName || preset.fontFamily);
       if (family) {
         const weight = preset.fontWeightBold ? 'bold ' : 'normal ';
         const style = preset.fontStyleItalic ? 'italic ' : '';

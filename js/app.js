@@ -24,7 +24,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initialize Core Modules (25 FPS Default)
   const presetParser = new PresetParser();
+  const fontLoader = new FontLoader();
   const subManager = new SubtitleManager(FPS);
+
+  // Turn the typography box into a dropdown of every installed font, so a face
+  // can be picked by eye instead of typed from memory — and so a style can be
+  // matched by hand when a file names a face under a slightly different name.
+  const fontFamilyInput = document.getElementById('fontFamily');
+  const fontPicker = new FontPicker(fontFamilyInput, {
+    onSelect: async (name) => {
+      // Usually a no-op: the platform draws an installed family by name, and
+      // ensure() says so without fetching anything. Only when it does not —
+      // another platform, or an exact face name — is the file registered here,
+      // and only then is a redraw needed to pick the new face up.
+      const result = await fontLoader.ensure(name);
+      if (result.ok && result.source !== 'document' && result.source !== 'renderable') {
+        fontFamilyInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+  });
+  fontPicker.loadFamilies = () => fontLoader.listFamilies();
+  fontLoader.listFamilies().then((families) => fontPicker.setFamilies(families));
 
   const videoEl = document.getElementById('videoPlayer');
   const canvasEl = document.getElementById('subtitleCanvas');
@@ -410,13 +430,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function readPresetFile(file) {
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       const presetObj = presetParser.parsePresetFile(evt.target.result, file.name);
       presetParser.addPreset(presetObj);
       addPresetOption(presetObj, true);
       applyPresetToUI(presetObj);
       playerController.setPreset(presetObj);
       toast(`Imported Premiere preset "${presetObj.name}".`, 'success');
+
+      // The named face is usually a licensed brand font rather than a web font.
+      // Loading it from the system is what makes the preview match Premiere, so
+      // say plainly when it is missing instead of drawing the wrong typeface.
+      const wanted = presetObj.fontPostScriptName || presetObj.fontFamily;
+      if (!wanted) return;
+      const result = await fontLoader.ensure(wanted);
+      if (result.ok) {
+        // setPreset re-renders, so the preview picks up the real face here.
+        playerController.setPreset({ ...presetObj, fontPostScriptName: result.family });
+      } else if (result.source === 'not-installed') {
+        toast(`"${wanted}" is not installed on this machine — captions will not ` +
+              `match Premiere until you install it.`, 'warn', 8000);
+      }
     };
     reader.onerror = () => toast(`Could not read "${file.name}".`, 'error');
     reader.readAsText(file);
@@ -835,6 +869,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const inputs = {
       fontFamily: document.getElementById('fontFamily'),
       fontSize: document.getElementById('fontSize'),
+      letterSpacing: document.getElementById('letterSpacing'),
+      lineHeight: document.getElementById('lineHeight'),
       fontWeightBold: document.getElementById('fontWeightBold'),
       fontStyleItalic: document.getElementById('fontStyleItalic'),
       textUppercase: document.getElementById('textUppercase'),
@@ -856,6 +892,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Range display text sync
     inputs.strokeWidth.addEventListener('input', (e) => document.getElementById('strokeWidthVal').textContent = `${e.target.value}px`);
+    inputs.letterSpacing.addEventListener('input', (e) => document.getElementById('letterSpacingVal').textContent = `${e.target.value}`);
+    inputs.lineHeight.addEventListener('input', (e) => document.getElementById('lineHeightVal').textContent = `${e.target.value}`);
     inputs.bgBoxOpacity.addEventListener('input', (e) => document.getElementById('bgBoxOpacityVal').textContent = `${e.target.value}%`);
     inputs.bgBoxPadding.addEventListener('input', (e) => document.getElementById('bgBoxPaddingVal').textContent = `${e.target.value}px`);
     inputs.bottomMargin.addEventListener('input', (e) => document.getElementById('bottomMarginVal').textContent = `${e.target.value}px`);
@@ -881,7 +919,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       playerController.setPreset({
         name: playerController.activePreset.name || 'Custom Style',
         fontFamily: inputs.fontFamily.value,
+        // Only meaningful while the family is untouched; editing the family box
+        // means the operator has chosen a different face than the file named.
+        fontPostScriptName: inputs.fontFamily.value === playerController.activePreset.fontFamily
+          ? (playerController.activePreset.fontPostScriptName || '') : '',
         fontSize: parseInt(inputs.fontSize.value, 10) || 42,
+        letterSpacing: parseFloat(inputs.letterSpacing.value) || 0,
+        lineHeight: parseFloat(inputs.lineHeight.value) || 1.25,
         fontWeightBold: inputs.fontWeightBold.checked,
         fontStyleItalic: inputs.fontStyleItalic.checked,
         textUppercase: inputs.textUppercase.checked,
@@ -922,6 +966,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     set('fontFamily', preset.fontFamily || 'Inter');
     set('fontSize', preset.fontSize || 42);
+    set('letterSpacing', preset.letterSpacing !== undefined ? preset.letterSpacing : 0);
+    set('lineHeight', preset.lineHeight !== undefined ? preset.lineHeight : 1.25);
     check('fontWeightBold', preset.fontWeightBold);
     check('fontStyleItalic', preset.fontStyleItalic);
     check('textUppercase', preset.textUppercase);
@@ -941,6 +987,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     set('bottomMargin', preset.bottomMargin !== undefined ? preset.bottomMargin : 75);
     set('animationPreset', preset.animationPreset || 'none');
 
+    document.getElementById('letterSpacingVal').textContent = `${preset.letterSpacing !== undefined ? preset.letterSpacing : 0}`;
+    document.getElementById('lineHeightVal').textContent = `${preset.lineHeight !== undefined ? preset.lineHeight : 1.25}`;
     document.getElementById('strokeWidthVal').textContent = `${preset.strokeWidth !== undefined ? preset.strokeWidth : 5}px`;
     document.getElementById('bgBoxOpacityVal').textContent = `${preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 75}%`;
     document.getElementById('bgBoxPaddingVal').textContent = `${preset.bgBoxPadding !== undefined ? preset.bgBoxPadding : 18}px`;

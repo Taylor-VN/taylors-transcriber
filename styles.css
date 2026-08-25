@@ -1208,6 +1208,81 @@ svg[viewBox]:not(.icon):not(.brand-icon) {
 }
 .input-row .checkbox-label { flex-shrink: 0; }
 
+/* --- font picker (js/fontPicker.js) ----------------------------------- */
+
+.font-picker {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+.font-picker .font-picker-input { padding-right: 20px; }
+.font-picker-caret {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.font-picker-caret:hover { color: var(--text); }
+.font-picker.open .font-picker-caret { color: var(--accent); transform: rotate(180deg); }
+
+/* display:flex below would otherwise beat the UA rule for [hidden] — author
+   styles win over UA styles regardless of specificity — leaving the panel on
+   screen after it was closed. */
+.font-picker-panel[hidden] { display: none; }
+.font-picker-panel {
+  position: fixed;
+  z-index: 950;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.font-picker-list {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* Sets the scroll height for the virtualised rows, which are absolute. */
+.font-picker-spacer { width: 1px; }
+.font-picker-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--s2);
+  font-size: var(--fs-base);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.font-picker-row.active { background: var(--accent-quiet); color: #fff; }
+/* A face named by a preset but absent from this machine — shown, not hidden. */
+.font-picker-row.missing { color: var(--warn); font-style: italic; }
+.font-picker-empty {
+  padding: var(--s3) var(--s2);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
 .input-lbl {
   font-size: var(--fs-sm);
   color: var(--text-muted);
