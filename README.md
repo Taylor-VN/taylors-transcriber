@@ -198,18 +198,27 @@ covered, not merely tight.
 | Set | Ratio | Basis |
 | --- | --- | --- |
 | Generic 5% / 10% | any | the old 4:3-era convention, kept as a neutral default |
-| EBU R95 | 16:9 | 3.5% graphics safe area, plus the 14:9 centre extraction |
+| EBU R95 | 16:9 | 5% graphics safe area, with the 3.5% action safe area outside it |
 | YouTube | 16:9 | clear of the progress bar and the cards/share affordances |
 | YouTube Shorts | 9:16 | title and channel block, action rail |
-| Instagram Reels | 9:16 | 250 px top, 420 px bottom on 1080 × 1920 |
-| Instagram Stories | 9:16 | 250 px top and bottom on 1080 × 1920 |
-| TikTok | 9:16 | 130 top, 483 bottom, 44 left, 140 right on 1080 × 1920 |
+| Instagram Reels | 9:16 | 14% top, 35% bottom, 6% each side |
+| Instagram Stories | 9:16 | 14% top, 35% bottom, 6% each side |
+| TikTok | 9:16 | 130 top, 484 bottom, 44 left, 140 right on 1080 × 1920 |
 
-EBU R95 and the three with pixel figures come from the published specs. The
-three marked with an asterisk in the dropdown — Generic and both YouTube sets —
-are measured from the current interface instead. Apps redesign; re-check those
-before trusting them on a delivery. All of them live in one table at the top of
-`js/safeAreas.js`, so correcting a number is a one-line change.
+EBU R95, both Instagram sets and TikTok come from published specs. The three
+marked with an asterisk in the dropdown — Generic and both YouTube sets — are
+measured instead, because Google publishes a reference image rather than
+figures. Apps redesign; re-check those before trusting them on a delivery.
+
+Two caveats worth knowing. Meta quotes one safe zone for Stories and Reels
+alike, and it is the *ads* figure, so the 35% at the bottom is reserving room
+for a call-to-action button you may not have — the sets stay separate because
+the hatched interface zones above and below still differ. And the published 6%
+at the sides does not clear the organic action rail, which is why the hatching
+on the right crosses the box; keep clear of both.
+
+All of them live in one table at the top of `js/safeAreas.js`, so correcting a
+number is a one-line change.
 
 ## AI transcription
 
