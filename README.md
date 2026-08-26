@@ -356,15 +356,58 @@ engines transcribe what they are given and have no such gate to stand down.
 
 ## Premiere presets
 
-Import `.prfpset` / `.prtextstyle` / XML / JSON. The parser looks for values by
-tag name, by `<Parameter Name="…">` node, and by attribute, falling back to a
-raw-text scan, and understands Premiere's colour encodings (`#rgb`, `#rrggbb`,
-`#aarrggbb`, `0x…`, `r,g,b`, normalised floats, packed ARGB).
+Import `.prfpset` / `.prtextstyle` / XML / JSON, from **Import…** at the top of
+the Style panel — a caption style is a property of that panel, not material
+being brought into the job like media or subtitles.
+
+### The preset library
+
+Every style imported from Premiere, and every style saved with **+ Save**, is
+kept on this machine and comes back the next time the app opens: preset files
+usually live on the drive of whoever built the sequence, and finding one twice
+is wasted time. They appear under **Your library** in the preset dropdown, and
+**Library** opens the list — each entry showing the look, where it came from,
+its font and the file it was read from, with Apply, Rename and Remove. Importing
+the same file again, or saving over a name already there, replaces that entry
+instead of stacking another copy beside it. Removing an entry does not restyle a
+film already wearing it.
+
+A real `.prtextstyle` keeps none of its typography in the XML tags: the whole
+appearance is a FlatBuffers blob in the `Source Text` parameter. `premiereStyle.js`
+decodes it into the font, size, tracking, leading, fill, stroke, drop shadow and
+background box, and `presetParser.js` maps those onto a caption preset. Colour
+channels there default to 255, so an absent or empty colour table means white —
+Premiere only writes the bytes for a colour you changed.
+
+One thing Premiere does *not* store is where the caption sits. Every
+`.prtextstyle` it writes pins `Position` to `0.5:0.5` and `Anchor Point` to
+`0:0` regardless of where the caption it was saved from actually sat, so the
+Zone and the Position pair the Essential Graphics panel shows cannot be
+imported. **Offset X / Y**, under the position grid, takes those numbers
+directly: pick the same zone, type Premiere's Position pair, and the caption
+lands in the same place. Both fields are scrubbers, like every number in
+Premiere's Essential Graphics panel — drag sideways to change the value, click
+to type into it, hold Shift for ten to the pixel or Alt for a tenth. The
+offsets are 1080-tall reference pixels — at
+1920×1080 they are Premiere's own numbers one for one, and they scale with the
+frame height in the other ratios, like every other measurement in a preset.
+
+Two things Premiere stores that a caption preset cannot express: the shadow's
+angle (this app only offsets downwards, so the distance is kept and the angle
+dropped) and its opacity. Font sizes are points in the sequence the style was
+authored in, and are imported unchanged against this app's 1080-tall reference
+frame — a style built in a 1080×1920 sequence therefore previews larger here
+than it does in Premiere.
+
+Anything else — `.prfpset`, XML or JSON — goes through the generic sweep, which
+looks for values by tag name, by `<Parameter Name="…">` node, and by attribute,
+falling back to a raw-text scan, and understands Premiere's colour encodings
+(`#rgb`, `#rrggbb`, `#aarrggbb`, `0x…`, `r,g,b`, normalised floats, packed ARGB).
 
 ## Interface
 
 The toolbar groups its actions into three menus — **Project** (new/open/save,
-plus the film operations), **Import** (media, subtitles, Premiere presets) and
+plus the film operations), **Import** (media, subtitles) and
 **Export** (ProRes + alpha, SRT, VTT, sequence XML, style preset) — with
 Transcribe, Settings and Help alongside. Every action keeps its keyboard
 shortcut. Below the toolbar, the film strip carries one tab per edit in the job.
@@ -418,5 +461,6 @@ js/projectManager.js      project/film/ratio records, .ttproj serialisation
 js/safeAreas.js           broadcast and social safe-area guide sets
 js/timeline.js            ruler, waveform, draggable clips, snapping
 js/presetParser.js        Premiere preset import/export
+js/scrubbable.js          drag-to-change number fields, as Premiere's panels use
 js/app.js                 UI wiring
 ```

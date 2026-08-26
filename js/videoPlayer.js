@@ -163,11 +163,28 @@ class VideoPlayerController {
     }
   }
 
+  /**
+   * Merges, because the inspector sends the fields it owns rather than a whole
+   * style. A whole style — the preset dropdown, an import, another ratio — has
+   * to go through applyPreset() instead.
+   */
   setPreset(presetObj) {
     if (!presetObj) return;
     this.activePreset = { ...this.activePreset, ...presetObj };
     this.renderOverlay();
     this.onPresetChangeCallbacks.forEach(cb => cb(this.activePreset));
+  }
+
+  /**
+   * Swaps the whole style. Anything the incoming preset leaves unsaid falls
+   * back to the preset defaults rather than to the style being replaced: a
+   * Premiere import names an exact face in `fontPostScriptName`, and a merge
+   * would leave that face drawing under every preset chosen afterwards, since
+   * presets that never named one have no value to overwrite it with.
+   */
+  applyPreset(presetObj) {
+    if (!presetObj) return;
+    this.setPreset(this.presetParser.normalizePreset(presetObj));
   }
 
   /**
@@ -459,6 +476,13 @@ class VideoPlayerController {
     } else {
       posY = h / 2; // center-left / center / center-right
     }
+
+    // Premiere's Align and Transform nudges the block off its zone by a pixel
+    // offset — the pair its Position field shows, positive Y downwards. Both
+    // axes scale by the frame's height so the nudge survives a ratio change,
+    // and at 1080 the numbers are Premiere's own, one for one.
+    posX += (preset.offsetX || 0) * scaleFactor;
+    posY += (preset.offsetY || 0) * scaleFactor;
 
     // Animation
     let animAlpha = 1.0;

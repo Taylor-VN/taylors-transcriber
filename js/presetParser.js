@@ -253,6 +253,8 @@ class PresetParser {
         shadowOffsetY: this.toNumber(lookup(['ShadowOffsetY', 'ShadowDistance', 'shadowOffsetY'], null)) ?? 6,
         align: this.normalizeAlign(lookup(['Alignment', 'Align', 'TextAlignment', 'align'], null)),
         bottomMargin: this.toNumber(lookup(['BottomMargin', 'SafeMargin', 'bottomMargin'], null)) ?? 75,
+        offsetX: this.toNumber(lookup(['PositionX', 'OffsetX', 'offsetX'], null)) ?? 0,
+        offsetY: this.toNumber(lookup(['PositionY', 'OffsetY', 'offsetY'], null)) ?? 0,
         animationPreset: lookup(['Animation', 'AnimationPreset', 'animationPreset'], 'none')
       };
 
@@ -267,8 +269,9 @@ class PresetParser {
    * Decodes a genuine Premiere Pro .prtextstyle.
    *
    * Returns null when the document is not one, so the caller can fall back to
-   * the generic tag sweep. Fields Premiere does not store — background box,
-   * animation — keep this app's defaults rather than being invented.
+   * the generic tag sweep. Fields Premiere does not store — animation, and the
+   * shadow's angle and opacity, which this app's single vertical offset cannot
+   * express — keep this app's defaults rather than being invented.
    */
   parsePremiereTextStyle(doc, rawText, baseName) {
     if (typeof PremiereStyleDecoder === 'undefined') return null;
@@ -286,11 +289,17 @@ class PresetParser {
     }
 
     const run = (decoded.runs || [])[0] || {};
-    const fontName = (decoded.fonts || [])[0] || '';
+    const style = run.style || {};
+    const para = decoded.paragraph || {};
+    const shadow = para.shadow || {};
+    const background = para.background || {};
+    const fontName = style.font || (decoded.fonts || [])[0] || '';
     const styleName = PremiereStyleDecoder.readStyleName(doc);
     const transform = PremiereStyleDecoder.readTransform(doc);
 
     const base = { ...this.defaultPresets['netflix_clean'] };
+    const fontSize = style.fontSize > 0 ? Math.round(style.fontSize) : base.fontSize;
+
     const preset = {
       ...base,
       id: 'premiere_' + Date.now(),
@@ -300,34 +309,42 @@ class PresetParser {
       // into something canvas can draw, so keep it verbatim.
       fontFamily: fontName || base.fontFamily,
       fontPostScriptName: fontName || '',
-      // Weight and slant live in the face itself ("…-Bold", "…-Italic"), not in
-      // a flag, so synthesising either would double up on the real font.
-      fontWeightBold: false,
-      fontStyleItalic: false,
-      textUppercase: false,
+      // Weight and slant normally live in the face itself ("…-Bold"), so only
+      // Premiere's faux flags — the ones that really do synthesise a style —
+      // set these.
+      fontWeightBold: !!style.fauxBold,
+      fontStyleItalic: !!style.fauxItalic,
+      textUppercase: style.capsOption === 2,
 
-      fontSize: run.fontSize > 0 ? Math.round(run.fontSize) : base.fontSize,
-      strokeWidth: run.strokeWidth > 0 ? run.strokeWidth : 0,
-      enableStroke: (run.strokeWidth || 0) > 0,
+      fontSize,
+      letterSpacing: Math.round(style.tracking || 0),
+      lineHeight: this.lineHeightFromLeading(para.leading, fontSize),
 
-      fillColor: decoded.colors.a || base.fillColor,
-      strokeColor: decoded.colors.b || '#000000',
+      fillColor: style.fillColor || '#ffffff',
+      enableStroke: !!style.strokeVisible && (style.strokeWidth || 0) > 0,
+      strokeColor: style.strokeColor || '#000000',
+      strokeWidth: style.strokeWidth > 0 ? style.strokeWidth : 0,
 
-      // Shadow and background are in the blob but not yet positively mapped to
-      // fields. Inheriting a base preset's values would silently paint effects
-      // the file never asked for, so both stay off until they can be read.
-      enableShadow: false,
-      enableBgBox: false,
+      enableShadow: !!shadow.visible,
+      shadowColor: shadow.color || '#000000',
+      shadowBlur: Math.round(shadow.blur || 0),
+      // Premiere throws the shadow at an angle; this app only offsets it
+      // downwards, so the distance is kept and the angle dropped.
+      shadowOffsetY: Math.round(shadow.distance || 0),
+
+      enableBgBox: !!background.visible,
+      bgBoxColor: background.color || '#000000',
+      bgBoxOpacity: Math.round(background.opacity !== undefined ? background.opacity : 100),
+      bgBoxPadding: Math.round(background.size || 0),
 
       // Premiere positions text by a normalised anchor rather than a margin.
-      ...this.alignmentFromTransform(transform),
+      ...this.alignmentFromTransform(transform, para.align),
 
       // Everything the blob carries, kept so an operator can see exactly what
       // was in the file and so the remaining fields can be mapped later.
       premiere: {
         fonts: decoded.fonts,
-        numbers: decoded.numbers,
-        flags: decoded.flags,
+        paragraph: para,
         transform,
         runs: decoded.runs
       }
@@ -337,22 +354,44 @@ class PresetParser {
   }
 
   /**
-   * Converts Premiere's normalised Position (0..1 of frame) into this app's
-   * align + margin model. Only the vertical half is meaningful here, since the
-   * renderer centres horizontally.
+   * Premiere's Leading is points added to the font's auto leading (120% of the
+   * size), and can be negative. This app stores a multiple of the font size.
    */
-  alignmentFromTransform(transform) {
+  lineHeightFromLeading(leading, fontSize) {
+    const AUTO = 1.2;
+    if (!leading || !fontSize) return AUTO;
+    // Snapped to the 0.05 the line-height slider steps in, so the control and
+    // the render agree about what was imported.
+    return Math.max(0.5, Math.round((AUTO + leading / fontSize) * 20) / 20);
+  }
+
+  /**
+   * Converts Premiere's normalised Position (0..1 of frame) and paragraph
+   * justification into this app's align + margin model.
+   */
+  alignmentFromTransform(transform, justify) {
+    const horizontal = typeof PremiereStyleDecoder !== 'undefined'
+      ? PremiereStyleDecoder.horizontalAlign(justify)
+      : 'center';
+
     const pos = transform && transform['Position'];
-    if (!pos || !/:/.test(pos)) return {};
-    const [, yStr] = pos.split(':');
-    const y = parseFloat(yStr);
-    if (isNaN(y)) return {};
+    const y = pos && /:/.test(pos) ? parseFloat(pos.split(':')[1]) : NaN;
+
+    // A .prtextstyle carries no layout — every file Premiere writes pins
+    // Position to 0.5:0.5 and Anchor Point to 0:0 no matter where the caption
+    // it was saved from actually sat, so the zone and the Position pair the
+    // Essential Graphics panel shows have to be dialled in by hand (the
+    // Offset X / Y fields under the position grid take Premiere's own
+    // numbers). Anything but a decisively placed graphic therefore keeps this
+    // app's bottom-of-frame caption default instead of jumping to the middle.
+    if (isNaN(y) || (y > 0.34 && y < 0.66)) {
+      return { align: 'bottom-' + horizontal };
+    }
 
     // Margin is expressed against the 1080-tall reference frame the renderer
     // scales from, measured to the text block's centre.
-    if (y <= 0.34) return { align: 'top-center', bottomMargin: Math.round(y * 1080) };
-    if (y >= 0.66) return { align: 'bottom-center', bottomMargin: Math.round((1 - y) * 1080) };
-    return { align: 'center' };
+    if (y <= 0.34) return { align: 'top-' + horizontal, bottomMargin: Math.round(y * 1080) };
+    return { align: 'bottom-' + horizontal, bottomMargin: Math.round((1 - y) * 1080) };
   }
 
   /** Search the document for a tag, a Name="..." parameter node, or an attribute. */
@@ -533,6 +572,10 @@ class PresetParser {
       shadowOffsetY: num(presetObj.shadowOffsetY, 6),
       align: this.normalizeAlign(presetObj.align),
       bottomMargin: num(presetObj.bottomMargin, 75),
+      // Premiere's Position pair, in the same 1080-tall reference pixels the
+      // rest of the style is authored against. Positive Y is down.
+      offsetX: num(presetObj.offsetX, 0),
+      offsetY: num(presetObj.offsetY, 0),
       animationPreset: ['none', 'fade', 'pop', 'karaoke'].includes(presetObj.animationPreset)
         ? presetObj.animationPreset : 'none',
       premiere: presetObj.premiere || null
@@ -570,6 +613,8 @@ class PresetParser {
     <ShadowOffsetY>${esc(preset.shadowOffsetY)}</ShadowOffsetY>
     <Alignment>${esc(preset.align)}</Alignment>
     <BottomMargin>${esc(preset.bottomMargin)}</BottomMargin>
+    <PositionX>${esc(preset.offsetX || 0)}</PositionX>
+    <PositionY>${esc(preset.offsetY || 0)}</PositionY>
     <AnimationPreset>${esc(preset.animationPreset)}</AnimationPreset>
   </TextPreset>
 </PremiereData>`;

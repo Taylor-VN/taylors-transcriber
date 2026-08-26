@@ -120,10 +120,6 @@
               <svg class="icon"><use href="#i-import"/></svg>
               <span class="menu-item-label">Subtitles<em>SRT, VTT or JSON</em></span>
             </button>
-            <button id="btnTriggerImportPreset" class="menu-item" role="menuitem">
-              <svg class="icon"><use href="#i-layers"/></svg>
-              <span class="menu-item-label">Premiere Preset<em>.prfpset or .prtextstyle</em></span>
-            </button>
           </div>
         </div>
 
@@ -339,24 +335,35 @@
       </div>
 
       <div class="inspector-scroll">
-        <!-- Preset Quick Selector -->
+        <!-- Preset Quick Selector.
+             Styles are imported here rather than from the Import menu: that
+             menu brings material into the job (media, captions), while a
+             Premiere preset is a property of this panel. -->
         <div class="style-group">
           <div class="preset-select-header">
             <label class="group-label">Preset</label>
             <div class="preset-action-btns">
-              <button id="btnCopyStyleToRatios" class="btn-xs btn-outline" title="Copy this style to the other aspect ratios">To all ratios</button>
-              <button id="btnResetStyle" class="btn-xs btn-outline" title="Reset to Preset Default">Reset</button>
-              <button id="btnSaveCustomPreset" class="btn-xs btn-primary" title="Save Current Style as New Preset">+ Save</button>
+              <button id="btnImportPreset" class="btn-xs btn-outline" title="Import a Premiere preset (.prfpset or .prtextstyle)">Import…</button>
+              <button id="btnPresetLibrary" class="btn-xs btn-outline" title="Styles you have imported or saved before">Library</button>
             </div>
           </div>
           <select id="presetSelect" class="input-select">
-            <option value="classic_yellow">Classic Film Yellow (Premiere Pro)</option>
-            <option value="tiktok_pop">TikTok Pop (Bold Cyan Stroke)</option>
-            <option value="netflix_clean">Netflix Clean (Bottom Center)</option>
-            <option value="cinematic_boxed">Cinematic Black Box</option>
-            <option value="cyber_neon">Cyber Neon Glow</option>
-            <option value="minimal_white">Minimal White Shadow</option>
+            <optgroup label="Built in" id="presetGroupBuiltin">
+              <option value="classic_yellow">Classic Film Yellow (Premiere Pro)</option>
+              <option value="tiktok_pop">TikTok Pop (Bold Cyan Stroke)</option>
+              <option value="netflix_clean">Netflix Clean (Bottom Center)</option>
+              <option value="cinematic_boxed">Cinematic Black Box</option>
+              <option value="cyber_neon">Cyber Neon Glow</option>
+              <option value="minimal_white">Minimal White Shadow</option>
+            </optgroup>
+            <!-- Filled from js/presetLibrary.js at boot; hidden while empty. -->
+            <optgroup label="Your library" id="presetGroupLibrary" hidden></optgroup>
           </select>
+          <div class="preset-action-btns preset-action-row">
+            <button id="btnCopyStyleToRatios" class="btn-xs btn-outline" title="Copy this style to the other aspect ratios">To all ratios</button>
+            <button id="btnResetStyle" class="btn-xs btn-outline" title="Reset to Preset Default">Reset</button>
+            <button id="btnSaveCustomPreset" class="btn-xs btn-primary" title="Save the current style into your library">+ Save</button>
+          </div>
         </div>
 
         <!-- Typography -->
@@ -511,6 +518,13 @@
             </button>
           </div>
           <div class="input-row margin-top-sm">
+            <span class="input-lbl">Offset X / Y</span>
+            <input type="number" id="offsetX" class="input-num" value="0" min="-2000" max="2000" step="1"
+                   title="Horizontal nudge from the position zone, in 1080p pixels — Premiere's Position X. Drag to scrub, click to type.">
+            <input type="number" id="offsetY" class="input-num" value="0" min="-2000" max="2000" step="1"
+                   title="Vertical nudge from the position zone, in 1080p pixels — Premiere's Position Y, negative is up. Drag to scrub, click to type.">
+          </div>
+          <div class="input-row margin-top-sm">
             <span class="input-lbl">Bottom Margin</span>
             <input type="range" id="bottomMargin" min="10" max="250" value="50" class="input-range">
             <span id="bottomMarginVal" class="range-val">50px</span>
@@ -629,6 +643,28 @@
         <div class="shortcut-row"><kbd>Ctrl/⌘ + S</kbd> <span>Save Project</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + Shift + S</kbd> <span>Save Project As…</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + O</kbd> <span>Open Project</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preset Library. Every style imported from Premiere or saved off the Style
+       panel, kept between launches by js/presetLibrary.js. -->
+  <div id="presetLibraryModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Preset Library</h3>
+        <button id="btnClosePresetLibrary" class="btn-icon" title="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint tight">
+          Styles imported from Premiere or saved off the Style panel. They are
+          kept on this machine, so a preset file only has to be found once.
+        </p>
+        <div id="presetLibraryList" class="preset-library-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnImportPresetFromLibrary" class="btn btn-outline">Import Premiere preset…</button>
+        <button id="btnClosePresetLibraryFooter" class="btn btn-primary">Done</button>
       </div>
     </div>
   </div>
@@ -926,7 +962,7 @@
             One per line, or comma separated.
           </p>
           <textarea id="transcribeVocabulary" class="input-textarea" rows="3"
-            placeholder="Smart Meters&#10;Bright Spark&#10;flexible tariff"></textarea>
+            placeholder="Brand Name&#10;Product Name&#10;Persons Name"></textarea>
           <label class="checkbox-label">
             <input type="checkbox" id="transcribeCarryContext"> Carry context between segments
           </label>
@@ -973,10 +1009,12 @@
 
   <script src="js/bridge.js"></script>
   <script src="js/menu.js"></script>
+  <script src="js/scrubbable.js"></script>
   <script src="js/premiereStyle.js"></script>
   <script src="js/fontLoader.js"></script>
   <script src="js/fontPicker.js"></script>
   <script src="js/presetParser.js"></script>
+  <script src="js/presetLibrary.js"></script>
   <script src="js/subtitleManager.js"></script>
   <script src="js/projectManager.js"></script>
   <script src="js/safeAreas.js"></script>

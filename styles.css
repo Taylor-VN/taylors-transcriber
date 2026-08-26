@@ -353,6 +353,20 @@ svg[viewBox]:not(.icon):not(.brand-icon) {
 }
 .input-select { width: 100%; cursor: pointer; }
 .input-num { width: 58px; text-align: center; font-family: var(--mono); }
+
+/* Scrubbable numbers (js/scrubbable.js): drag sideways to change, click to
+   type, the way every number in Premiere's Essential Graphics panel behaves.
+   The accent colour is the app's mark for "actionable", which is exactly what
+   sets these apart from a field you can only type into. */
+.scrubbable { cursor: ew-resize; color: var(--accent); }
+.scrubbable:focus { cursor: text; color: var(--text); }
+/* The spin buttons would sit under the pointer and swallow the drag. */
+.scrubbable::-webkit-inner-spin-button,
+.scrubbable::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.scrubbable { -moz-appearance: textfield; appearance: textfield; }
+/* While a scrub is in flight the cursor has to hold everywhere, not just over
+   the field the pointer started on. */
+body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: none; }
 .input-search { width: 100%; }
 .input-text { width: 100%; font-family: var(--mono); font-size: var(--fs-sm); }
 .select-sm { height: 22px; font-size: var(--fs-sm); }
@@ -1199,6 +1213,88 @@ svg[viewBox]:not(.icon):not(.brand-icon) {
   gap: var(--s3);
 }
 .preset-action-btns { display: flex; gap: var(--s1); }
+/* The apply/save actions sit under the dropdown: the header row above it holds
+   the two that reach outside this panel (import, library). */
+.preset-action-row { margin-top: var(--s2); justify-content: flex-end; }
+
+/* --- preset library modal (js/app.js buildPresetLibraryList) ---------- */
+
+.preset-library-list { display: flex; flex-direction: column; gap: var(--s2); }
+
+.preset-library-empty {
+  padding: var(--s6) var(--s4);
+  text-align: center;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.preset-library-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.preset-library-row.active { border-color: var(--accent); }
+
+/* Reads the style back at a glance: fill, stroke, box and case, drawn the way
+   the caption will be. Fixed width so every row lines up. */
+.preset-swatch {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  background:
+    linear-gradient(45deg, #23262b 25%, transparent 25%, transparent 75%, #23262b 75%) 0 0 / 10px 10px,
+    linear-gradient(45deg, #23262b 25%, #191b1f 25%, #191b1f 75%, #23262b 75%) 5px 5px / 10px 10px;
+  overflow: hidden;
+}
+.preset-swatch span {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.preset-library-meta { flex: 1 1 auto; min-width: 0; }
+.preset-library-name {
+  font-size: var(--fs-base);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preset-library-sub {
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preset-library-tag {
+  display: inline-block;
+  margin-right: var(--s2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+}
+.preset-library-tag.premiere { color: var(--accent); border-color: var(--accent); }
+
+.preset-library-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s1); }
 
 .input-row {
   display: flex;

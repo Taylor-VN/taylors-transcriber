@@ -20,9 +20,23 @@
  * as sibling <VideoComponentParam> / <PointComponentParam> nodes keyed by <Name>,
  * with the value as field 1 of the <StartKeyframe> CSV.
  *
- * Field numbers below were mapped by walking the vtables of a real Premiere
- * export. Anything not positively identified is returned under `raw` rather than
- * guessed at, so a caller can see exactly what was in the file.
+ * The FlatBuffers table is Premiere's ATE "text param". Its field names — in
+ * declaration order — are still in the Premiere binary, left over from the older
+ * JSON form of the same object that CC2019 motion graphics templates were saved
+ * in:
+ *
+ *   mWidth, mHeight, mAlignment, mVerticalAlignment, mLeading, mTabWidth,
+ *   … mShadowColor, mShadowVisible, mShadowOpacity, mShadowAngle, mShadowOffset,
+ *   mShadowSize, mShadowBlur, mBackFillColor, mBackFillVisible,
+ *   mBackFillOpacity, mBackFillSize, …
+ *
+ * and per run: mFontName, mFontSize, mFillColor, mFillVisible, mStrokeColor,
+ * mStrokeVisible, mStrokeWidth, mKerning, mTracking, … mCapsOption,
+ * mBaselineOption, mFauxBold, mFauxItalic.
+ *
+ * The field numbers below line those names up against the vtables of real
+ * Premiere exports. Anything not positively identified is returned under `raw`
+ * rather than guessed at, so a caller can see exactly what was in the file.
  */
 
 /** Minimal little-endian FlatBuffers reader — just the accessors we need. */
@@ -143,32 +157,58 @@ class FlatBufferReader {
   }
 }
 
-/* Field numbers observed in the paragraph (root style) table. */
+/* Field numbers of the paragraph (text param) table. */
 const PARA = {
-  RUNS: 0,        // vector<Run>
-  FONTS: 1,       // vector<string> — PostScript font names
-  COLOR_A: 10,    // colour table
-  COLOR_B: 17,    // colour table
-  NUM_12: 12, NUM_14: 14, NUM_15: 15, NUM_16: 16, NUM_19: 19, NUM_20: 20,
-  FLAG_18: 18, FLAG_26: 26, FLAG_43: 43, FLAG_44: 44,
-  ENUM_4: 4, ENUM_5: 5
+  RUNS: 0,           // vector<Run> — mTextRuns, hoisted to the front
+  FONTS: 1,          // vector<string> — the PostScript names runs index into
+  ALIGN: 4,          // mAlignment, an ATE justification enum
+  VALIGN: 5,         // mVerticalAlignment
+  LEADING: 6,        // mLeading, points added to the font's auto leading
+  SHADOW_COLOR: 10,
+  SHADOW_VISIBLE: 11,
+  SHADOW_OPACITY: 12,  // percent
+  SHADOW_ANGLE: 13,    // degrees
+  SHADOW_OFFSET: 14,   // points — Premiere calls this Distance
+  SHADOW_SIZE: 15,
+  SHADOW_BLUR: 16,
+  BACK_COLOR: 17,      // the "Background" box behind the text
+  BACK_VISIBLE: 18,
+  BACK_OPACITY: 19,    // percent
+  BACK_SIZE: 20        // points the box is grown by on every side
 };
 
-/* Field numbers observed in the per-run character-format table. */
-const CHAR = {
-  FONT_SIZE: 1,     // float, points
-  STROKE_WIDTH: 6,  // float
-  TABLE_21: 21,
-  TABLE_23: 23,
-  ENUM_24: 24
+/* Field numbers of the per-run character style table. */
+const STYLE = {
+  FONT: 0,           // index into the paragraph's font vector
+  SIZE: 1,           // float, points
+  FILL_COLOR: 2,
+  FILL_VISIBLE: 3,
+  STROKE_COLOR: 4,
+  STROKE_VISIBLE: 5,
+  STROKE_WIDTH: 6,   // float, points drawn outside the glyph
+  KERNING: 7,
+  TRACKING: 8,       // 1/1000 em, the number Premiere's Tracking field shows
+  CAPS: 12,          // mCapsOption: 0 none, 1 small caps, 2 all caps
+  FAUX_BOLD: 14,
+  FAUX_ITALIC: 15
 };
 
-/** Colour sub-table: three ubyte channels, absent meaning 0. */
+/* ATE justification enum, as stored in mAlignment. */
+const JUSTIFY = { LEFT: 0, RIGHT: 1, CENTER: 2, FULL_LEFT: 3, FULL_RIGHT: 4, FULL_CENTER: 5 };
+
+/**
+ * Colour sub-table: three ubyte channels whose schema default is 255.
+ *
+ * That default is why black arrives as three explicit zeros while white — the
+ * Premiere default for both fill and stroke — arrives as an empty table, or as
+ * no table at all. Reading absent channels as 0 turned every imported caption
+ * black.
+ */
 function readColor(fb, table) {
   if (!table) return null;
-  const r = fb.byte(table, 0, 0);
-  const g = fb.byte(table, 1, 0);
-  const b = fb.byte(table, 2, 0);
+  const r = fb.byte(table, 0, 255);
+  const g = fb.byte(table, 1, 255);
+  const b = fb.byte(table, 2, 255);
   const hex = (n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
   return '#' + hex(r) + hex(g) + hex(b);
 }
@@ -209,45 +249,64 @@ class PremiereStyleDecoder {
 
     const runs = fb.vector(para, PARA.RUNS).map(runTable => {
       const text = fb.string(runTable, 0);
-      const fmtOff = fb.fieldOffset(runTable, 1);
-      const fmt = fmtOff ? fb.indirect(runTable, 1) : 0;
+      const st = fb.has(runTable, 1) ? fb.indirect(runTable, 1) : 0;
+      if (!st) return { text, style: null };
+      const fontIndex = fb.int(st, STYLE.FONT, 0);
       return {
         text,
-        fontSize: fmt ? fb.float(fmt, CHAR.FONT_SIZE, 0) : 0,
-        strokeWidth: fmt ? fb.float(fmt, CHAR.STROKE_WIDTH, 0) : 0,
-        // These two are present-but-empty in every sample seen so far; an empty
-        // table means "all schema defaults", not "absent".
-        hasTable21: fmt ? fb.has(fmt, CHAR.TABLE_21) : false,
-        hasTable23: fmt ? fb.has(fmt, CHAR.TABLE_23) : false,
-        raw: fmt ? fb.describe(fmt) : {}
+        style: {
+          font: fonts[fontIndex] || fonts[0] || null,
+          fontIndex,
+          fontSize: fb.float(st, STYLE.SIZE, 0),
+          // Absent colour tables are Premiere's defaults: white fill, white
+          // stroke. Absent visibility flags mean the fill is drawn and the
+          // stroke is not.
+          fillColor: readColor(fb, fb.indirect(st, STYLE.FILL_COLOR)) || '#ffffff',
+          fillVisible: fb.bool(st, STYLE.FILL_VISIBLE, true),
+          strokeColor: readColor(fb, fb.indirect(st, STYLE.STROKE_COLOR)) || '#ffffff',
+          strokeVisible: fb.bool(st, STYLE.STROKE_VISIBLE, false),
+          strokeWidth: fb.float(st, STYLE.STROKE_WIDTH, 0),
+          tracking: fb.float(st, STYLE.TRACKING, 0),
+          kerning: fb.float(st, STYLE.KERNING, 0),
+          capsOption: fb.int(st, STYLE.CAPS, 0),
+          fauxBold: fb.bool(st, STYLE.FAUX_BOLD, false),
+          fauxItalic: fb.bool(st, STYLE.FAUX_ITALIC, false)
+        },
+        raw: fb.describe(st)
       };
     });
 
-    const colorA = fb.has(para, PARA.COLOR_A) ? readColor(fb, fb.indirect(para, PARA.COLOR_A)) : null;
-    const colorB = fb.has(para, PARA.COLOR_B) ? readColor(fb, fb.indirect(para, PARA.COLOR_B)) : null;
-
-    return {
-      fonts,
-      runs,
-      colors: { a: colorA, b: colorB },
-      numbers: {
-        n12: fb.float(para, PARA.NUM_12, 0),
-        n14: fb.float(para, PARA.NUM_14, 0),
-        n15: fb.float(para, PARA.NUM_15, 0),
-        n16: fb.float(para, PARA.NUM_16, 0),
-        n19: fb.float(para, PARA.NUM_19, 0),
-        n20: fb.float(para, PARA.NUM_20, 0)
+    const paragraph = {
+      align: fb.int(para, PARA.ALIGN, JUSTIFY.CENTER),
+      verticalAlign: fb.int(para, PARA.VALIGN, 0),
+      // Premiere's Leading field is a delta on the font's auto leading, so 0
+      // (and an absent field) means "auto", not "no line height".
+      leading: fb.float(para, PARA.LEADING, 0),
+      shadow: {
+        visible: fb.bool(para, PARA.SHADOW_VISIBLE, false),
+        color: readColor(fb, fb.indirect(para, PARA.SHADOW_COLOR)) || '#000000',
+        opacity: fb.float(para, PARA.SHADOW_OPACITY, 100),
+        angle: fb.float(para, PARA.SHADOW_ANGLE, 0),
+        distance: fb.float(para, PARA.SHADOW_OFFSET, 0),
+        size: fb.float(para, PARA.SHADOW_SIZE, 0),
+        blur: fb.float(para, PARA.SHADOW_BLUR, 0)
       },
-      flags: {
-        f18: fb.bool(para, PARA.FLAG_18),
-        f26: fb.bool(para, PARA.FLAG_26),
-        f43: fb.bool(para, PARA.FLAG_43),
-        f44: fb.bool(para, PARA.FLAG_44),
-        e4: fb.byte(para, PARA.ENUM_4, 0),
-        e5: fb.byte(para, PARA.ENUM_5, 0)
-      },
-      raw: fb.describe(para)
+      background: {
+        visible: fb.bool(para, PARA.BACK_VISIBLE, false),
+        color: readColor(fb, fb.indirect(para, PARA.BACK_COLOR)) || '#000000',
+        opacity: fb.float(para, PARA.BACK_OPACITY, 100),
+        size: fb.float(para, PARA.BACK_SIZE, 0)
+      }
     };
+
+    return { fonts, runs, paragraph, raw: fb.describe(para) };
+  }
+
+  /** Maps an ATE justification enum onto this app's horizontal alignment. */
+  static horizontalAlign(justify) {
+    if (justify === JUSTIFY.LEFT || justify === JUSTIFY.FULL_LEFT) return 'left';
+    if (justify === JUSTIFY.RIGHT || justify === JUSTIFY.FULL_RIGHT) return 'right';
+    return 'center';
   }
 
   /**

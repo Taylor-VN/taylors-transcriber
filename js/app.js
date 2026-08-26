@@ -24,6 +24,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initialize Core Modules (25 FPS Default)
   const presetParser = new PresetParser();
+  // Styles imported from Premiere or saved off the inspector, kept between
+  // launches so a preset file only has to be found once.
+  const presetLibrary = new PresetLibrary();
   const fontLoader = new FontLoader();
   const subManager = new SubtitleManager(FPS);
 
@@ -116,6 +119,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.__timeline = timelineController;
   window.__exporter = exporter;
   window.__presets = presetParser;
+  window.__presetLibrary = presetLibrary;
   window.__transcriber = transcriber;
   window.__settings = settings;
   window.__segmenter = segmenter;
@@ -142,6 +146,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindAspectRatioControls();
   bindCaptionsListUI();
   bindStyleInspectorUI();
+  bindPresetLibraryUI();
+  // Before bootProject(): a reopened film names its style by id, and the saved
+  // library is where those ids are defined.
+  refreshPresetLibraryUI();
   bindTimelineToolbar();
   bindExportModal();
   bindTranscribeModal();
@@ -256,9 +264,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       e.target.value = '';
     });
 
-    // Premiere Preset Import (.prfpset / .prtextstyle / .xml / .json)
+    // Premiere Preset Import (.prfpset / .prtextstyle / .xml / .json). Both
+    // triggers live in the Style panel — the header's Import menu is for the
+    // material of the job, not for the look of its captions.
     const presetInput = document.getElementById('presetFileInput');
-    document.getElementById('btnTriggerImportPreset').addEventListener('click', () => {
+    document.getElementById('btnImportPreset').addEventListener('click', () => {
+      presetInput.click();
+    });
+    document.getElementById('btnImportPresetFromLibrary').addEventListener('click', () => {
       presetInput.click();
     });
 
@@ -431,12 +444,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   function readPresetFile(file) {
     const reader = new FileReader();
     reader.onload = async (evt) => {
-      const presetObj = presetParser.parsePresetFile(evt.target.result, file.name);
-      presetParser.addPreset(presetObj);
-      addPresetOption(presetObj, true);
+      const parsed = presetParser.parsePresetFile(evt.target.result, file.name);
+      // Kept, not just applied: the file usually lives on the drive of whoever
+      // built the Premiere sequence, and finding it a second time is the part
+      // that wastes the operator's afternoon.
+      const presetObj = presetLibrary.save(parsed, { source: 'premiere', fileName: file.name });
+      refreshPresetLibraryUI(presetObj.id);
       applyPresetToUI(presetObj);
-      playerController.setPreset(presetObj);
-      toast(`Imported Premiere preset "${presetObj.name}".`, 'success');
+      playerController.applyPreset(presetObj);
+      toast(presetLibrary.lastWriteOk
+        ? `Imported "${presetObj.name}" — saved to your preset library.`
+        : `Imported "${presetObj.name}" — this browser refused to store it, so it lasts this session only.`,
+        presetLibrary.lastWriteOk ? 'success' : 'warn', presetLibrary.lastWriteOk ? 4200 : 7000);
 
       // The named face is usually a licensed brand font rather than a web font.
       // Loading it from the system is what makes the preview match Premiere, so
@@ -445,8 +464,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!wanted) return;
       const result = await fontLoader.ensure(wanted);
       if (result.ok) {
-        // setPreset re-renders, so the preview picks up the real face here.
-        playerController.setPreset({ ...presetObj, fontPostScriptName: result.family });
+        // setPreset re-renders, so the preview picks up the real face here. The
+        // resolved face goes back into the library too, so the next launch
+        // starts from the name that actually drew rather than the one the file
+        // asked for.
+        const resolved = { ...presetObj, fontPostScriptName: result.family };
+        presetLibrary.save(resolved, { source: 'premiere', fileName: file.name });
+        presetParser.addPreset(resolved);
+        playerController.applyPreset(resolved);
       } else if (result.source === 'not-installed') {
         toast(`"${wanted}" is not installed on this machine — captions will not ` +
               `match Premiere until you install it.`, 'warn', 8000);
@@ -842,28 +867,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     presetSelect.addEventListener('change', (e) => {
       const presetObj = presetParser.getPreset(e.target.value);
       applyPresetToUI(presetObj);
-      playerController.setPreset(presetObj);
+      playerController.applyPreset(presetObj);
     });
 
     document.getElementById('btnResetStyle').addEventListener('click', () => {
       const presetObj = presetParser.getPreset(presetSelect.value);
       applyPresetToUI(presetObj);
-      playerController.setPreset(presetObj);
+      playerController.applyPreset(presetObj);
       toast(`Reset to "${presetObj.name}".`, 'success');
     });
 
     document.getElementById('btnSaveCustomPreset').addEventListener('click', () => {
-      const name = prompt('Enter a name for your custom preset:', 'My Premiere Style');
+      const suggested = playerController.activePreset.name || 'My Premiere Style';
+      const name = prompt('Enter a name for this preset:', suggested);
       if (!name) return;
-      const customObj = {
-        ...playerController.activePreset,
-        id: 'custom_' + Date.now(),
-        name: name
-      };
-      presetParser.addPreset(customObj);
-      addPresetOption(customObj, true);
-      playerController.setPreset(customObj);
-      toast(`Saved preset "${name}".`, 'success');
+      // Saving over a name already in the library replaces that entry, so
+      // iterating on a style does not leave six near-identical presets behind.
+      const entry = presetLibrary.save({ ...playerController.activePreset, name }, { source: 'custom' });
+      refreshPresetLibraryUI(entry.id);
+      playerController.applyPreset(entry);
+      toast(presetLibrary.lastWriteOk
+        ? `Saved "${entry.name}" to your preset library.`
+        : `Saved "${entry.name}" for this session — this browser refused to store the library.`,
+        presetLibrary.lastWriteOk ? 'success' : 'warn');
     });
 
     const inputs = {
@@ -887,8 +913,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       shadowBlur: document.getElementById('shadowBlur'),
       shadowOffsetY: document.getElementById('shadowOffsetY'),
       bottomMargin: document.getElementById('bottomMargin'),
+      offsetX: document.getElementById('offsetX'),
+      offsetY: document.getElementById('offsetY'),
       animationPreset: document.getElementById('animationPreset')
     };
+
+    // Premiere's Position pair is a scrubber, so this one is too.
+    Scrubbable.attach(inputs.offsetX);
+    Scrubbable.attach(inputs.offsetY);
 
     // Range display text sync
     inputs.strokeWidth.addEventListener('input', (e) => document.getElementById('strokeWidthVal').textContent = `${e.target.value}px`);
@@ -943,21 +975,185 @@ document.addEventListener('DOMContentLoaded', async () => {
         shadowOffsetY: parseInt(inputs.shadowOffsetY.value, 10) || 0,
         align: activeAlignBtn ? activeAlignBtn.dataset.align : 'bottom-center',
         bottomMargin: parseInt(inputs.bottomMargin.value, 10) || 0,
+        offsetX: parseInt(inputs.offsetX.value, 10) || 0,
+        offsetY: parseInt(inputs.offsetY.value, 10) || 0,
         animationPreset: inputs.animationPreset.value
       });
     }
   }
 
-  function addPresetOption(preset, select = false) {
-    const presetSelect = document.getElementById('presetSelect');
-    let opt = presetSelect.querySelector(`option[value="${preset.id}"]`);
-    if (!opt) {
-      opt = document.createElement('option');
-      opt.value = preset.id;
-      presetSelect.appendChild(opt);
+  /**
+   * Mirrors the saved library into the "Your library" group of the preset
+   * dropdown, and registers every entry with the parser so a film that
+   * references a saved style by id still resolves after a restart.
+   *
+   * Deleting an entry does not un-register it for this session: a film already
+   * wearing that style keeps drawing it until the app is reopened.
+   *
+   * @param {string} [selectId] id to leave selected once the group is rebuilt.
+   */
+  function refreshPresetLibraryUI(selectId) {
+    const select = document.getElementById('presetSelect');
+    const group = document.getElementById('presetGroupLibrary');
+    if (!select || !group) return;
+
+    const entries = presetLibrary.list();
+    group.innerHTML = '';
+    entries.forEach(entry => {
+      presetParser.addPreset(entry);
+      const opt = document.createElement('option');
+      opt.value = entry.id;
+      opt.textContent = `${entry.name} (${entry.source === 'premiere' ? 'Premiere' : 'Custom'})`;
+      group.appendChild(opt);
+    });
+    group.hidden = entries.length === 0;
+
+    if (selectId && select.querySelector(`option[value="${selectId}"]`)) select.value = selectId;
+  }
+
+  // --- Preset library dialog ---
+  function bindPresetLibraryUI() {
+    const modal = document.getElementById('presetLibraryModal');
+    const close = () => modal.classList.add('hidden');
+
+    document.getElementById('btnPresetLibrary').addEventListener('click', () => {
+      renderPresetLibrary();
+      modal.classList.remove('hidden');
+    });
+    document.getElementById('btnClosePresetLibrary').addEventListener('click', close);
+    document.getElementById('btnClosePresetLibraryFooter').addEventListener('click', close);
+    modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  }
+
+  /** One row per saved style: how it looks, where it came from, what to do with it. */
+  function renderPresetLibrary() {
+    const list = document.getElementById('presetLibraryList');
+    if (!list) return;
+
+    const entries = presetLibrary.list();
+    list.innerHTML = '';
+
+    if (entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'preset-library-empty';
+      empty.textContent = 'Nothing saved yet. Import a Premiere preset, or style the '
+        + 'captions and press “+ Save” to keep that look for the next job.';
+      list.appendChild(empty);
+      return;
     }
-    opt.textContent = `${preset.name} (Custom)`;
-    if (select) presetSelect.value = preset.id;
+
+    const activeId = playerController.activePreset && playerController.activePreset.id;
+
+    entries.forEach(entry => {
+      const row = document.createElement('div');
+      row.className = 'preset-library-row' + (entry.id === activeId ? ' active' : '');
+      row.appendChild(presetSwatch(entry));
+
+      const meta = document.createElement('div');
+      meta.className = 'preset-library-meta';
+
+      const name = document.createElement('div');
+      name.className = 'preset-library-name';
+      name.textContent = entry.name;
+      meta.appendChild(name);
+
+      const sub = document.createElement('div');
+      sub.className = 'preset-library-sub';
+      const tag = document.createElement('span');
+      tag.className = 'preset-library-tag' + (entry.source === 'premiere' ? ' premiere' : '');
+      tag.textContent = entry.source === 'premiere' ? 'Premiere' : 'Custom';
+      sub.appendChild(tag);
+      sub.appendChild(document.createTextNode(describePresetEntry(entry)));
+      sub.title = entry.fileName || '';
+      meta.appendChild(sub);
+      row.appendChild(meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'preset-library-actions';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.className = 'btn-xs btn-primary';
+      applyBtn.textContent = 'Apply';
+      applyBtn.title = 'Use this style on the current film';
+      applyBtn.addEventListener('click', () => {
+        applyPresetToUI(entry);
+        playerController.applyPreset(entry);
+        refreshPresetLibraryUI(entry.id);
+        renderPresetLibrary();
+        toast(`Applied "${entry.name}".`, 'success');
+      });
+      actions.appendChild(applyBtn);
+
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'btn-xs btn-outline';
+      renameBtn.textContent = 'Rename';
+      renameBtn.addEventListener('click', () => {
+        const next = prompt('Rename this preset:', entry.name);
+        if (!next || next.trim() === entry.name) return;
+        presetLibrary.rename(entry.id, next);
+        refreshPresetLibraryUI();
+        renderPresetLibrary();
+      });
+      actions.appendChild(renameBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn-icon btn-icon-danger';
+      delBtn.title = 'Remove from library';
+      delBtn.innerHTML = '<svg class="icon"><use href="#i-trash"/></svg>';
+      delBtn.addEventListener('click', () => {
+        if (!confirm(`Remove "${entry.name}" from your preset library?`)) return;
+        const wasActive = entry.id === (playerController.activePreset || {}).id;
+        presetLibrary.remove(entry.id);
+        refreshPresetLibraryUI();
+        renderPresetLibrary();
+        // Removing it from the library does not strip it off the film, and the
+        // dropdown can no longer show it — say so rather than let the panel and
+        // the picture disagree in silence.
+        toast(wasActive
+          ? `Removed "${entry.name}". This film keeps that look until you choose another preset.`
+          : `Removed "${entry.name}".`, 'info', wasActive ? 6000 : 4200);
+      });
+      actions.appendChild(delBtn);
+
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
+  /** Draws the style back at the operator: fill, stroke, box, weight and case. */
+  function presetSwatch(entry) {
+    const swatch = document.createElement('div');
+    swatch.className = 'preset-swatch';
+
+    const sample = document.createElement('span');
+    sample.textContent = entry.textUppercase ? 'AA' : 'Aa';
+    sample.style.color = entry.fillColor || '#ffffff';
+    sample.style.fontFamily = `"${(entry.fontFamily || 'Inter').replace(/"/g, '')}", sans-serif`;
+    sample.style.fontWeight = entry.fontWeightBold ? '700' : '400';
+    sample.style.fontStyle = entry.fontStyleItalic ? 'italic' : 'normal';
+    if (entry.enableStroke) {
+      sample.style.webkitTextStroke = `1px ${entry.strokeColor || '#000000'}`;
+      // Painting the stroke over the glyph thins it; this keeps the fill on top.
+      sample.style.paintOrder = 'stroke fill';
+    }
+    if (entry.enableBgBox) {
+      const opacity = entry.bgBoxOpacity !== undefined ? entry.bgBoxOpacity : 75;
+      sample.style.background = playerController.hexToRgba(entry.bgBoxColor || '#000000', opacity / 100);
+    }
+    swatch.appendChild(sample);
+    return swatch;
+  }
+
+  function describePresetEntry(entry) {
+    const bits = [`${entry.fontFamily || 'Inter'} ${entry.fontSize || 42}px`];
+    if (entry.fileName) bits.push(entry.fileName);
+    if (entry.savedAt) {
+      const when = new Date(entry.savedAt);
+      if (!isNaN(when)) {
+        bits.push(when.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }));
+      }
+    }
+    return bits.join('  •  ');
   }
 
   function applyPresetToUI(preset) {
@@ -985,6 +1181,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     set('shadowBlur', preset.shadowBlur !== undefined ? preset.shadowBlur : 12);
     set('shadowOffsetY', preset.shadowOffsetY !== undefined ? preset.shadowOffsetY : 6);
     set('bottomMargin', preset.bottomMargin !== undefined ? preset.bottomMargin : 75);
+    set('offsetX', preset.offsetX || 0);
+    set('offsetY', preset.offsetY || 0);
     set('animationPreset', preset.animationPreset || 'none');
 
     document.getElementById('letterSpacingVal').textContent = `${preset.letterSpacing !== undefined ? preset.letterSpacing : 0}`;
@@ -1922,7 +2120,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!ratio) return;
 
     playerController.setAspectRatio(ratioId);
-    playerController.setPreset(ratio.preset);
+    playerController.applyPreset(ratio.preset);
     applyPresetToUI(ratio.preset);
     syncPresetSelect(ratio.preset);
 
@@ -2512,16 +2710,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       const exportOpen = !document.getElementById('exportModal').classList.contains('hidden');
       const transcribeOpen = !document.getElementById('transcribeModal').classList.contains('hidden');
       const settingsOpen = !document.getElementById('settingsModal').classList.contains('hidden');
+      const libraryOpen = !document.getElementById('presetLibraryModal').classList.contains('hidden');
 
       if (e.key === 'Escape') {
         document.getElementById('shortcutsModal').classList.add('hidden');
         document.getElementById('exportModal').classList.add('hidden');
         document.getElementById('transcribeModal').classList.add('hidden');
         document.getElementById('settingsModal').classList.add('hidden');
+        document.getElementById('presetLibraryModal').classList.add('hidden');
         return;
       }
       // Don't drive the editor while a dialog is up
-      if (exportOpen || transcribeOpen || settingsOpen) return;
+      if (exportOpen || transcribeOpen || settingsOpen || libraryOpen) return;
 
       switch (e.code) {
         case 'Space':
