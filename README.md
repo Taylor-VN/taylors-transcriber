@@ -5,6 +5,10 @@ captions render straight to **Apple ProRes 4444 with a real alpha channel**, so
 they drop onto a track above your footage and composite cleanly — no keying, no
 burned-in text.
 
+![The editor: caption list on the left, program monitor in the middle, style panel on the right, timeline underneath](docs/screenshots/editor.jpg)
+
+*The caption list, the program monitor and the style panel, over a timeline that carries the waveform and one block per caption.*
+
 ## Running it
 
 There is nothing to install first.
@@ -178,6 +182,10 @@ render run writes one file per ratio, each named for it. Ratios with no
 captions are disabled rather than silently rendering a file of pure
 transparency.
 
+![The ProRes 4444 + Alpha export dialog with all four aspect ratios ticked](docs/screenshots/export-prores-alpha.jpg)
+
+*One run, four files. The dialog counts the frames it is about to render and says which backend will write them.*
+
 Each ratio is rendered by genuinely switching the editor to it, so every file
 in the set is drawn by the same code that drew the preview you approved. The
 editor returns to the ratio you started on when the run ends, including after
@@ -194,6 +202,10 @@ Two things are drawn. The solid box is the line to keep text inside. The
 hatched amber regions are where the platform's own interface sits on top of the
 video, which is a stronger claim than "might be cropped" — anything there is
 covered, not merely tight.
+
+![The program monitor in 9:16 with safe-area guides drawn over the caption](docs/screenshots/vertical-safe-areas.jpg)
+
+*The same film in 9:16, with guides on. Each ratio keeps its own line breaks, its own style and its own guide set.*
 
 | Set | Ratio | Basis |
 | --- | --- | --- |
@@ -226,6 +238,10 @@ Press **Transcribe** (or `T`) to auto-caption the loaded media with an
 open-source model running **entirely on your own machine** — the audio is never
 uploaded anywhere. Models are installed and removed from **Settings** (`,`).
 
+![The Auto-Transcribe dialog, showing model, language, word timing, audio and speaker options](docs/screenshots/transcribe.jpg)
+
+*The transcribe dialog says what the chosen model can and cannot do — here, that its word timings come from the forced aligner instead.*
+
 ### Pick the runtime before the model
 
 On Apple Silicon this matters more than the model choice. CTranslate2 — what
@@ -245,6 +261,10 @@ Install these from **Settings → Speech Runtimes**. "Install recommended setup"
 picks the right set for the machine it is running on — the GPU runtimes plus the
 aligner on Apple Silicon. Settings also warns you if the only runtime present is
 the CPU-bound one, and only offers runtimes that exist for your platform.
+
+![The Settings window listing speech runtimes with their download sizes and install state](docs/screenshots/settings-models.jpg)
+
+*Runtimes and models install on a button click, into the app's private environment — no terminal, and nothing added to your system Python.*
 
 ### Choosing a model
 
