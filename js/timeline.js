@@ -7,6 +7,14 @@ const TRACK_HEADER_WIDTH = 90;
 const RULER_HEIGHT = 24;
 const MIN_CLIP_SEC = 0.1;
 
+// Canvas cannot read the CSS custom properties, so the tokens the tracks need
+// are mirrored here. Keep these in step with :root in styles.css.
+const TRACK_BG = '#171819';    // --bg-sunken
+const TICK = '#3d4245';        // --border-strong
+const TICK_LABEL = '#9ba1a6';  // --text-muted
+const WAVE = '#22d3ee';        // --time, the timeline's own colour
+const SILENCE = '#2c3033';     // --border, for a track with no audio in it
+
 class TimelineController {
   constructor(rulerCanvas, waveformCanvas, subtitleTrackContainer, playheadElement, subtitleManager, videoPlayer, fps = 25) {
     this.rulerCanvas = rulerCanvas;
@@ -210,11 +218,11 @@ class TimelineController {
     const h = parseFloat(this.rulerCanvas.style.height) || RULER_HEIGHT;
 
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#1a1a1a';
+    ctx.fillStyle = TRACK_BG;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = '#444444';
-    ctx.fillStyle = '#9e9e9e';
+    ctx.strokeStyle = TICK;
+    ctx.fillStyle = TICK_LABEL;
     ctx.font = '10px "Roboto Mono", monospace';
 
     // Pick the tick spacing that keeps labels from colliding at this zoom.
@@ -257,18 +265,32 @@ class TimelineController {
     }
   }
 
-  // --- Draw Synthetic / Loaded Audio Waveform ---
+  /**
+   * Draws the decoded audio for the loaded media. With nothing loaded there is
+   * no audio to draw, so the track holds a flat baseline: a stand-in pattern
+   * would be read as a real signal and timed against.
+   */
   drawWaveform() {
     const ctx = this.waveformCtx;
     const w = this.contentWidth || this.waveformCanvas.clientWidth;
     const h = parseFloat(this.waveformCanvas.style.height) || 50;
 
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#151515';
+    ctx.fillStyle = TRACK_BG;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = 'rgba(0, 210, 255, 0.6)';
     ctx.lineWidth = 1;
+
+    if (!this.peaks) {
+      ctx.strokeStyle = SILENCE;
+      ctx.beginPath();
+      ctx.moveTo(0, Math.round(h / 2) + 0.5);
+      ctx.lineTo(w, Math.round(h / 2) + 0.5);
+      ctx.stroke();
+      return;
+    }
+
+    ctx.strokeStyle = WAVE;
 
     const barWidth = 3;
     const gap = 1;
@@ -278,12 +300,7 @@ class TimelineController {
     ctx.beginPath();
     for (let i = 0; i < totalBars; i++) {
       const x = i * step;
-      const timeSec = x / this.zoomLevel;
-      const amp = this.peaks
-        ? this.peakAt(timeSec) * (h * 0.46)
-        // Deterministic stand-in pattern — no Math.random(), so redraws are stable.
-        : Math.abs(Math.sin(i * 0.15) * Math.cos(i * 0.04)) * (h * 0.4);
-
+      const amp = this.peakAt(x / this.zoomLevel) * (h * 0.46);
       ctx.moveTo(x, (h / 2) - amp);
       ctx.lineTo(x, (h / 2) + amp);
     }

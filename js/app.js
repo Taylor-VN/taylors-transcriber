@@ -140,8 +140,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // --- UI Element Binding ---
-  // Bind first: the panels subscribe to subManager.onChange here, so loading
-  // the starter captions before this point would leave the list empty on boot.
+  // Bind first: the panels subscribe to subManager.onChange here, so restoring
+  // a project before this point would leave the list empty on boot.
   bindHeaderControls();
   bindAspectRatioControls();
   bindCaptionsListUI();
@@ -162,18 +162,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   applyPresetToUI(playerController.activePreset);
 
-  const STARTER_CAPTIONS = [
-    { start: 1.0, end: 4.5, text: "Welcome to Taylor's Transcriber!", speaker: "Host" },
-    { start: 5.0, end: 9.2, text: "Designed with Premiere Pro workflows in mind.", speaker: "Host" },
-    { start: 10.0, end: 14.0, text: "Drag subtitles on the timeline or edit timestamps on the left.", speaker: "Editor" },
-    { start: 14.8, end: 19.5, text: "Import your .prfpset preset files to customize style presets!", speaker: "Editor" },
-    { start: 20.0, end: 24.5, text: "Export to ProRes 4444 with alpha, in any aspect ratio.", speaker: "Host" }
-  ];
-
   /**
    * Puts a project on screen at launch: the one autosaved from the last session
-   * if there is one, otherwise a fresh single-film project carrying the starter
-   * captions so the editor is not an empty grid on first run.
+   * if there is one, otherwise an empty single-film project. A first run starts
+   * with no captions — they arrive from a transcription or an import, and
+   * seeding demo lines only leaves real work to be deleted first.
    *
    * Called from the very last line of this file rather than here. Restoring a
    * film drives the whole editor — transport, timeline, caption list — and those
@@ -184,10 +177,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDemoPicture();
 
     const restored = restoreAutosave();
-    if (!restored) {
-      const film = project.getActive();
-      project.setCaptionsAllRatios(film.id, STARTER_CAPTIONS);
-    }
 
     applyActiveFilm();
     project.dirty = false;
@@ -834,6 +823,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         listContainer.appendChild(itemEl);
       });
 
+      // Nothing to show is two different situations, and the way out of each
+      // is different: a project with no captions yet needs a transcription or
+      // an import, a filtered list needs the filter cleared.
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.className = 'caption-empty';
+        empty.innerHTML = subs.length
+          ? `<p class="caption-empty-title">No matching lines</p>
+             <p class="caption-empty-hint">${reviewOnly
+               ? 'Nothing in this ratio is flagged for review.'
+               : 'No caption in this ratio matches the search.'}</p>`
+          : `<p class="caption-empty-title">No captions yet</p>
+             <p class="caption-empty-hint">Transcribe the audio, import an .srt or .vtt,
+                or add a line by hand to start captioning this film.</p>`;
+        listContainer.appendChild(empty);
+      }
+
       if (focusInfo) {
         const restored = listContainer.querySelector(
           `.caption-item[data-id="${focusInfo.id}"] .${focusInfo.cls.split(' ').join('.')}`);
@@ -1160,37 +1166,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = value; };
     const check = (id, value) => { const el = document.getElementById(id); if (el) el.checked = !!value; };
 
-    set('fontFamily', preset.fontFamily || 'Inter');
-    set('fontSize', preset.fontSize || 42);
-    set('letterSpacing', preset.letterSpacing !== undefined ? preset.letterSpacing : 0);
-    set('lineHeight', preset.lineHeight !== undefined ? preset.lineHeight : 1.25);
+    // A preset arriving from an import or the library can be missing any field,
+    // so every read falls back to the house default rather than to a second set
+    // of numbers. Normalised first, so fields the built-in does not spell out
+    // (tracking, leading, the Premiere offsets) still resolve to their default
+    // rather than to undefined.
+    const HOUSE = presetParser.normalizePreset(presetParser.getPreset('netflix_clean'));
+    const num = (key) => (preset[key] !== undefined ? preset[key] : HOUSE[key]);
+
+    set('fontFamily', preset.fontFamily || HOUSE.fontFamily);
+    set('fontSize', num('fontSize'));
+    set('letterSpacing', num('letterSpacing'));
+    set('lineHeight', num('lineHeight'));
     check('fontWeightBold', preset.fontWeightBold);
     check('fontStyleItalic', preset.fontStyleItalic);
     check('textUppercase', preset.textUppercase);
-    set('fillColor', preset.fillColor || '#ffea00');
+    set('fillColor', preset.fillColor || HOUSE.fillColor);
     check('enableStroke', preset.enableStroke);
-    set('strokeColor', preset.strokeColor || '#000000');
-    set('strokeWidth', preset.strokeWidth !== undefined ? preset.strokeWidth : 5);
+    set('strokeColor', preset.strokeColor || HOUSE.strokeColor);
+    set('strokeWidth', num('strokeWidth'));
     check('enableBgBox', preset.enableBgBox);
-    set('bgBoxColor', preset.bgBoxColor || '#000000');
-    set('bgBoxOpacity', preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 75);
-    set('bgBoxPadding', preset.bgBoxPadding !== undefined ? preset.bgBoxPadding : 18);
+    set('bgBoxColor', preset.bgBoxColor || HOUSE.bgBoxColor);
+    set('bgBoxOpacity', num('bgBoxOpacity'));
+    set('bgBoxPadding', num('bgBoxPadding'));
     check('enableShadow', preset.enableShadow);
     // <input type="color"> cannot hold rgba(), so normalise first.
     set('shadowColor', /^#[0-9a-f]{6}$/i.test(preset.shadowColor || '') ? preset.shadowColor : '#000000');
-    set('shadowBlur', preset.shadowBlur !== undefined ? preset.shadowBlur : 12);
-    set('shadowOffsetY', preset.shadowOffsetY !== undefined ? preset.shadowOffsetY : 6);
-    set('bottomMargin', preset.bottomMargin !== undefined ? preset.bottomMargin : 75);
-    set('offsetX', preset.offsetX || 0);
-    set('offsetY', preset.offsetY || 0);
+    set('shadowBlur', num('shadowBlur'));
+    set('shadowOffsetY', num('shadowOffsetY'));
+    set('bottomMargin', num('bottomMargin'));
+    set('offsetX', num('offsetX'));
+    set('offsetY', num('offsetY'));
     set('animationPreset', preset.animationPreset || 'none');
 
-    document.getElementById('letterSpacingVal').textContent = `${preset.letterSpacing !== undefined ? preset.letterSpacing : 0}`;
-    document.getElementById('lineHeightVal').textContent = `${preset.lineHeight !== undefined ? preset.lineHeight : 1.25}`;
-    document.getElementById('strokeWidthVal').textContent = `${preset.strokeWidth !== undefined ? preset.strokeWidth : 5}px`;
-    document.getElementById('bgBoxOpacityVal').textContent = `${preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 75}%`;
-    document.getElementById('bgBoxPaddingVal').textContent = `${preset.bgBoxPadding !== undefined ? preset.bgBoxPadding : 18}px`;
-    document.getElementById('bottomMarginVal').textContent = `${preset.bottomMargin !== undefined ? preset.bottomMargin : 75}px`;
+    document.getElementById('letterSpacingVal').textContent = `${num('letterSpacing')}`;
+    document.getElementById('lineHeightVal').textContent = `${num('lineHeight')}`;
+    document.getElementById('strokeWidthVal').textContent = `${num('strokeWidth')}px`;
+    document.getElementById('bgBoxOpacityVal').textContent = `${num('bgBoxOpacity')}%`;
+    document.getElementById('bgBoxPaddingVal').textContent = `${num('bgBoxPadding')}px`;
+    document.getElementById('bottomMarginVal').textContent = `${num('bottomMargin')}px`;
 
     document.querySelectorAll('.align-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.align === (preset.align || 'bottom-center'));
@@ -2851,13 +2865,57 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * Built-in demo picture. Unlike a live captureStream this is a pure function
-   * of time, so the playhead can be scrubbed, stepped and looped before any
-   * real media has been loaded.
+   * Built-in placeholder picture — the slate shown until real media is loaded.
+   *
+   * Deliberately flat and still: it stands behind the caption overlay, so
+   * anything moving or coloured under it would be judged as part of the caption
+   * style. A neutral grey ground is what caption legibility has to be read
+   * against, and the only thing that animates is the timecode, which is there
+   * to prove the transport is running.
+   *
+   * Unlike a live captureStream this is a pure function of time, so the
+   * playhead can be scrubbed, stepped and looped before any media exists.
    */
   function setupDemoPicture() {
     const demoCanvas = document.getElementById('demoCanvas');
     const dctx = demoCanvas.getContext('2d');
+
+    // Matches the interface tokens in styles.css. The ground sits a little
+    // above --bg-app so the frame reads as picture against the app chrome.
+    const SLATE_GROUND = '#212325';
+    const SLATE_TEXT = '#e6e8ea';
+    const SLATE_MUTED = '#6b7276';
+
+    const trackedWidth = (chars, tracking) =>
+      chars.reduce((sum, ch) => sum + dctx.measureText(ch).width, 0)
+      + tracking * Math.max(0, chars.length - 1);
+
+    /**
+     * Letter-spaced centred text, shrunk to fit. ctx.letterSpacing is too new
+     * to rely on in the desktop shell's webview, so the tracking is applied per
+     * glyph — which also means the fit has to be measured the same way.
+     *
+     * The fit matters: 9:16 is only 1080 wide but scales type by height, so a
+     * line sized for landscape would otherwise run past both edges.
+     */
+    const drawTracked = (text, cx, y, sizePx, makeFont, tracking, maxWidth) => {
+      const chars = [...text];
+      let size = sizePx;
+      dctx.font = makeFont(size);
+      let width = trackedWidth(chars, tracking);
+      while (size > 8 && width > maxWidth) {
+        size -= 1;
+        dctx.font = makeFont(size);
+        width = trackedWidth(chars, tracking * (size / sizePx));
+      }
+      const track = tracking * (size / sizePx);
+
+      let x = cx - width / 2;
+      chars.forEach((ch) => {
+        dctx.fillText(ch, x, y);
+        x += dctx.measureText(ch).width + track;
+      });
+    };
 
     playerController.onFrameRender((timeSec, project) => {
       if (playerController.hasMedia) return;
@@ -2869,57 +2927,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const w = demoCanvas.width;
       const h = demoCanvas.height;
+      // Every size below is authored against a 1080-tall frame and scaled, the
+      // same rule the caption presets follow, so the slate holds its
+      // proportions in 16:9, 1:1, 4:5 and 9:16 alike.
       const s = h / 1080;
 
-      dctx.fillStyle = '#0a0a14';
+      dctx.fillStyle = SLATE_GROUND;
       dctx.fillRect(0, 0, w, h);
 
-      dctx.strokeStyle = '#1e1e32';
-      dctx.lineWidth = 1;
-      const gridStep = 90 * s;
-      for (let x = 0; x < w; x += gridStep) {
-        dctx.beginPath(); dctx.moveTo(x, 0); dctx.lineTo(x, h); dctx.stroke();
-      }
-      for (let y = 0; y < h; y += gridStep) {
-        dctx.beginPath(); dctx.moveTo(0, y); dctx.lineTo(w, y); dctx.stroke();
-      }
+      dctx.textAlign = 'left';
+      dctx.textBaseline = 'alphabetic';
 
-      const angle = timeSec * 0.9;
-      const cx = (w / 2) + Math.cos(angle) * (w * 0.16);
-      const cy = (h / 2) + Math.sin(angle * 1.5) * (h * 0.14);
-      const radius = Math.min(w, h) * 0.42;
+      // Three sizes, one alignment: label, timecode, spec. Sitting above centre
+      // keeps the block clear of the caption band at the bottom of the frame.
+      const baseline = h * 0.44;
 
-      const grad = dctx.createRadialGradient(cx, cy, radius * 0.06, cx, cy, radius);
-      grad.addColorStop(0, '#1473e6');
-      grad.addColorStop(0.5, '#00d2ff');
-      grad.addColorStop(1, 'rgba(0, 210, 255, 0)');
-      dctx.fillStyle = grad;
-      dctx.beginPath(); dctx.arc(cx, cy, radius, 0, Math.PI * 2); dctx.fill();
+      const maxW = w * 0.72;
+      const sans = (n) => `500 ${n}px Inter, sans-serif`;
+      const mono = (n) => `400 ${n}px "Roboto Mono", monospace`;
 
-      dctx.textAlign = 'center';
-      dctx.textBaseline = 'middle';
+      dctx.fillStyle = SLATE_MUTED;
+      drawTracked('NO MEDIA', w / 2, baseline - 52 * s, Math.round(22 * s), sans, 5 * s, maxW);
 
-      // Shrink to fit rather than run off the edge of a narrow frame — the
-      // 9:16 project is only 1080 wide but scales type up by height.
-      const fitFont = (text, startPx, makeFont, maxWidth) => {
-        let size = startPx;
-        dctx.font = makeFont(size);
-        while (size > 8 && dctx.measureText(text).width > maxWidth) {
-          size -= 1;
-          dctx.font = makeFont(size);
-        }
-      };
-      const maxW = w * 0.86;
+      dctx.fillStyle = SLATE_TEXT;
+      drawTracked(subManager.secondsToTimecode(timeSec, FPS),
+        w / 2, baseline + 26 * s, Math.round(72 * s), mono, 2 * s, maxW);
 
-      const title = "TAYLOR'S TRANSCRIBER";
-      dctx.fillStyle = '#ffffff';
-      fitFont(title, Math.round(46 * s), (n) => `bold ${n}px sans-serif`, maxW);
-      dctx.fillText(title, w / 2, h * 0.32);
-
-      const sub = `${project.label}  •  ${w}×${h}  •  25 FPS`;
-      dctx.fillStyle = '#8fa8c8';
-      fitFont(sub, Math.round(30 * s), (n) => `${n}px "Roboto Mono", monospace`, maxW);
-      dctx.fillText(sub, w / 2, h * 0.4);
+      dctx.fillStyle = SLATE_MUTED;
+      drawTracked(`${w} \u00d7 ${h}  \u00b7  ${FPS} FPS`,
+        w / 2, baseline + 74 * s, Math.round(20 * s), mono, 2 * s, maxW);
     });
   }
 

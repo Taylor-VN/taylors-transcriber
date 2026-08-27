@@ -785,6 +785,28 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   gap: var(--s2);
 }
 
+/* Shown in place of the list when there is nothing in it. Centred in the
+   panel rather than stacked at the top, so it reads as a state and not as a
+   first row waiting for siblings. */
+.caption-empty {
+  margin: auto;
+  padding: var(--s6) var(--s5);
+  max-width: 260px;
+  text-align: center;
+}
+.caption-empty-title {
+  margin: 0 0 var(--s2);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.caption-empty-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
 .caption-item {
   background: var(--bg-sunken);
   border: 1px solid var(--border);
