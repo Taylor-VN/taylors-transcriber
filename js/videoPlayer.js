@@ -32,7 +32,7 @@ class VideoPlayerController {
     this.presetParser = presetParser;
     this.fps = fps;
 
-    this.activePreset = this.presetParser.getPreset('classic_yellow');
+    this.activePreset = this.presetParser.getPreset('netflix_clean');
     this.project = { ...ASPECT_PRESETS['16x9'] };
     this.onTimeUpdateCallbacks = [];
     this.onProjectChangeCallbacks = [];
@@ -415,7 +415,7 @@ class VideoPlayerController {
     if (preset.textUppercase) text = text.toUpperCase();
 
     const scaleFactor = h / REFERENCE_HEIGHT;
-    const fontSize = Math.max(1, Math.round((preset.fontSize || 42) * scaleFactor));
+    const fontSize = Math.max(1, Math.round((preset.fontSize || 54) * scaleFactor));
     const fontStyle = preset.fontStyleItalic ? 'italic ' : '';
     const fontWeight = preset.fontWeightBold ? 'bold ' : 'normal ';
 
@@ -505,7 +505,7 @@ class VideoPlayerController {
       const boxY = posY - (totalTextHeight / 2) - padding;
 
       if (shadowEnabled) applyShadow();
-      ctx.fillStyle = this.hexToRgba(preset.bgBoxColor, (preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 75) / 100);
+      ctx.fillStyle = this.hexToRgba(preset.bgBoxColor, (preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 60) / 100);
       this.drawRoundedRect(ctx, boxX, boxY, boxWidth, boxHeight, 6 * scaleFactor);
       ctx.fill();
       clearShadow();

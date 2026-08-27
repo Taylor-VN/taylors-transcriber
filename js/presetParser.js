@@ -63,11 +63,14 @@ class PresetParser {
         bottomMargin: 90,
         animationPreset: 'pop'
       },
+      // The default a new project opens on. Neutral on purpose: white, medium
+      // weight, a hairline stroke and a soft shadow carry it over both light
+      // and dark picture without the style itself becoming the subject.
       netflix_clean: {
         id: 'netflix_clean',
-        name: 'Netflix Clean (Bottom Center)',
+        name: 'Broadcast Clean',
         fontFamily: 'Inter',
-        fontSize: 57,
+        fontSize: 54,
         fontWeightBold: false,
         fontStyleItalic: false,
         textUppercase: false,
@@ -81,10 +84,10 @@ class PresetParser {
         bgBoxPadding: 12,
         enableShadow: true,
         shadowColor: '#000000',
-        shadowBlur: 9,
-        shadowOffsetY: 4,
+        shadowBlur: 10,
+        shadowOffsetY: 3,
         align: 'bottom-center',
-        bottomMargin: 68,
+        bottomMargin: 80,
         animationPreset: 'none'
       },
       cinematic_boxed: {
@@ -163,7 +166,7 @@ class PresetParser {
   }
 
   getPreset(id) {
-    return this.defaultPresets[id] || this.defaultPresets['classic_yellow'];
+    return this.defaultPresets[id] || this.defaultPresets['netflix_clean'];
   }
 
   listPresets() {
@@ -250,7 +253,7 @@ class PresetParser {
       return this.normalizePreset(preset, baseName);
     } catch (e) {
       console.warn('Failed XML/JSON parse for preset, falling back to default:', e);
-      return { ...this.defaultPresets['classic_yellow'], name: baseName + ' (unreadable — defaults used)' };
+      return { ...this.defaultPresets['netflix_clean'], name: baseName + ' (unreadable — defaults used)' };
     }
   }
 
