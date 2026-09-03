@@ -5,6 +5,8 @@ captions render straight to **Apple ProRes 4444 with a real alpha channel**, so
 they drop onto a track above your footage and composite cleanly — no keying, no
 burned-in text.
 
+![App Icon] (docs/app_icon.png)
+
 ![The editor: caption list on the left, program monitor in the middle, style panel on the right, timeline underneath](docs/screenshots/editor.jpg)
 
 *The caption list, the program monitor and the style panel, over a timeline that carries the waveform and one block per caption.*
