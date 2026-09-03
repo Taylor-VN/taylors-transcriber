@@ -16,7 +16,6 @@ $Version = & python -c "import version; print(version.__version__)"
 Write-Host "[windows] building Taylor's Transcriber $Version"
 
 python packaging\build_payload.py --platform windows --dest build\payload
-python packaging\make_icons.py --dest build\icons
 
 # The interpreter finds its standard library relative to its own executable, so
 # this copy has to live alongside python.exe rather than at the install root.

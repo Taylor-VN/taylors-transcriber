@@ -24,7 +24,6 @@ rm -rf "$BUILD/$APP_NAME.app" "$BUILD/dmgroot"
 mkdir -p "$OUT_DIR" "$BUILD"
 
 python3 "$ROOT/packaging/build_payload.py" --platform macos --dest "$BUILD/payload"
-python3 "$ROOT/packaging/make_icons.py" --dest "$BUILD/icons"
 
 # ---------------------------------------------------------------------------
 # Assemble the bundle
@@ -32,7 +31,7 @@ python3 "$ROOT/packaging/make_icons.py" --dest "$BUILD/icons"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -R "$BUILD/payload/python" "$APP/Contents/Resources/python"
 cp -R "$BUILD/payload/app" "$APP/Contents/Resources/app"
-cp "$BUILD/icons/icon.icns" "$APP/Contents/Resources/icon.icns"
+cp "$ROOT/packaging/icons/icon.icns" "$APP/Contents/Resources/icon.icns"
 
 # A shell script is a perfectly good CFBundleExecutable and, unlike a .command
 # file, opens no terminal window. Output goes to a log rather than nowhere, so a

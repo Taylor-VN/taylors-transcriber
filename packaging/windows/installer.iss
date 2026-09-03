@@ -28,7 +28,7 @@ DisableDirPage=no
 PrivilegesRequired=lowest
 OutputDir=..\..\dist
 OutputBaseFilename=TaylorsTranscriber-{#AppVersion}-setup
-SetupIconFile=..\..\build\icons\icon.ico
+SetupIconFile=..\icons\icon.ico
 UninstallDisplayIcon={app}\icon.ico
 Compression=lzma2/max
 SolidCompression=yes
@@ -39,7 +39,7 @@ WizardStyle=modern
 [Files]
 Source: "..\..\build\payload\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\..\build\payload\app\*";    DestDir: "{app}\app";    Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "..\..\build\icons\icon.ico";   DestDir: "{app}";        Flags: ignoreversion
+Source: "..\icons\icon.ico";            DestDir: "{app}";        Flags: ignoreversion
 
 [Icons]
 ; TaylorsTranscriber.exe is a renamed copy of pythonw.exe, so the process shows

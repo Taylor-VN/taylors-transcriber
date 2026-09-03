@@ -33,11 +33,10 @@ rm -rf "$APPDIR"
 mkdir -p "$OUT_DIR" "$APPDIR/usr"
 
 "$PYTHON" "$ROOT/packaging/build_payload.py" --platform linux --dest "$BUILD/payload"
-"$PYTHON" "$ROOT/packaging/make_icons.py" --dest "$BUILD/icons"
 
 cp -R "$BUILD/payload/python" "$APPDIR/usr/python"
 cp -R "$BUILD/payload/app" "$APPDIR/usr/app"
-cp "$BUILD/icons/icon.png" "$APPDIR/taylors-transcriber.png"
+cp "$ROOT/packaging/icons/icon.png" "$APPDIR/taylors-transcriber.png"
 
 cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/bash
