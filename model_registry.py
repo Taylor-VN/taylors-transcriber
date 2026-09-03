@@ -35,13 +35,20 @@ ENGINE_TRANSFORMERS = 'transformers'
 ENGINE_GRANITE_SPEECH = 'granite-speech'
 ENGINE_FASTER_WHISPER = 'faster-whisper'
 
+def is_apple_silicon():
+    return platform.system() == 'Darwin' and platform.machine() in ('arm64', 'aarch64')
+
+
 ENGINE_LABELS = {
     ENGINE_MLX_WHISPER: 'MLX (Apple GPU)',
     ENGINE_MLX_PARAKEET: 'MLX (Apple GPU)',
     ENGINE_MLX_QWEN3: 'MLX (Apple GPU)',
     ENGINE_TRANSFORMERS: 'Transformers (MPS/CUDA/CPU)',
     ENGINE_GRANITE_SPEECH: 'Transformers (MPS/CUDA/CPU)',
-    ENGINE_FASTER_WHISPER: 'faster-whisper (CPU on Mac)',
+    # CTranslate2 has no Metal backend, which is worth saying on a Mac and
+    # actively misleading anywhere else — it is the GPU path on an NVIDIA box.
+    ENGINE_FASTER_WHISPER: ('faster-whisper (CPU on Mac)' if is_apple_silicon()
+                            else 'faster-whisper (CUDA/CPU)'),
 }
 
 ENGINE_PACKAGES = {
@@ -54,7 +61,19 @@ ENGINE_PACKAGES = {
 }
 
 
-def _m(**kw):
+def _m(apple=None, **kw):
+    """
+    One catalogue entry, resolved for this machine.
+
+    Several models exist in two weight formats: a CTranslate2 build that
+    faster-whisper runs on CPU or an NVIDIA GPU, and an MLX build that runs on
+    the Apple GPU. They are the same model, so they are one entry rather than
+    two near-duplicates the user has to choose between — the portable build is
+    the base, and `apple` overrides it on Apple Silicon.
+
+    Resolving here, at import, means everything downstream still sees a model
+    with exactly one repo and one engine.
+    """
     base = {
         'id': None,
         'repo': None,
@@ -68,8 +87,11 @@ def _m(**kw):
         'needs_alignment': True,   # run the forced aligner for caption timing
         'notes': '',
         'tier': 'balanced',        # accuracy | balanced | fast
+        'platforms': ['any'],      # as for runtimes: restricts where it is offered
     }
     base.update(kw)
+    if apple and is_apple_silicon():
+        base.update(apple)
     return base
 
 
@@ -80,6 +102,9 @@ MODELS = {
         repo='mlx-community/Qwen3-ASR-1.7B',
         label='Qwen3-ASR 1.7B',
         engine=ENGINE_MLX_QWEN3,
+        # Only published as MLX weights, so it is hidden off Apple Silicon
+        # rather than listed as permanently unavailable.
+        platforms=['darwin-arm64'],
         size_gb=3.6,
         languages='multilingual',
         wer=None,
@@ -128,6 +153,9 @@ MODELS = {
         repo='mlx-community/parakeet-tdt-0.6b-v2',
         label='NVIDIA Parakeet TDT 0.6B v2',
         engine=ENGINE_MLX_PARAKEET,
+        # The NeMo original needs a runtime this app does not carry, so the MLX
+        # conversion is the only build it can run.
+        platforms=['darwin-arm64'],
         size_gb=1.3,
         languages=['en'],
         english_only=True,
@@ -140,11 +168,16 @@ MODELS = {
     ),
 
     # ------------------------------------------------------------ whisper family
+    # The Whisper family ships in both formats, so these run everywhere: MLX on
+    # the Apple GPU, CTranslate2 on CPU or an NVIDIA GPU. Both report word
+    # timings natively, so needs_alignment stays False either way.
     'whisper-large-v3': _m(
         id='whisper-large-v3',
-        repo='mlx-community/whisper-large-v3-mlx',
+        repo='Systran/faster-whisper-large-v3',
         label='Whisper large-v3',
-        engine=ENGINE_MLX_WHISPER,
+        engine=ENGINE_FASTER_WHISPER,
+        apple=dict(repo='mlx-community/whisper-large-v3-mlx',
+                   engine=ENGINE_MLX_WHISPER),
         size_gb=3.1,
         languages='multilingual',
         word_timings=True,
@@ -156,9 +189,13 @@ MODELS = {
     ),
     'whisper-large-v3-turbo': _m(
         id='whisper-large-v3-turbo',
-        repo='mlx-community/whisper-large-v3-turbo',
+        # Systran publish no turbo build; this is the CTranslate2 conversion in
+        # general use.
+        repo='deepdml/faster-whisper-large-v3-turbo-ct2',
         label='Whisper large-v3-turbo',
-        engine=ENGINE_MLX_WHISPER,
+        engine=ENGINE_FASTER_WHISPER,
+        apple=dict(repo='mlx-community/whisper-large-v3-turbo',
+                   engine=ENGINE_MLX_WHISPER),
         size_gb=1.6,
         languages='multilingual',
         word_timings=True,
@@ -169,20 +206,26 @@ MODELS = {
                'default when you want multilingual output quickly.'),
     ),
     'whisper-medium': _m(
-        id='whisper-medium', repo='mlx-community/whisper-medium-mlx',
-        label='Whisper medium', engine=ENGINE_MLX_WHISPER, size_gb=1.5,
+        id='whisper-medium', repo='Systran/faster-whisper-medium',
+        label='Whisper medium', engine=ENGINE_FASTER_WHISPER, size_gb=1.5,
+        apple=dict(repo='mlx-community/whisper-medium-mlx',
+                   engine=ENGINE_MLX_WHISPER),
         word_timings=True, needs_alignment=False, tier='balanced',
         notes='Mid-size multilingual Whisper.',
     ),
     'whisper-small': _m(
-        id='whisper-small', repo='mlx-community/whisper-small-mlx',
-        label='Whisper small', engine=ENGINE_MLX_WHISPER, size_gb=0.5,
+        id='whisper-small', repo='Systran/faster-whisper-small',
+        label='Whisper small', engine=ENGINE_FASTER_WHISPER, size_gb=0.5,
+        apple=dict(repo='mlx-community/whisper-small-mlx',
+                   engine=ENGINE_MLX_WHISPER),
         word_timings=True, needs_alignment=False, tier='fast',
         notes='Small multilingual Whisper. Quick, noticeably less accurate.',
     ),
     'whisper-tiny': _m(
-        id='whisper-tiny', repo='mlx-community/whisper-tiny-mlx',
-        label='Whisper tiny', engine=ENGINE_MLX_WHISPER, size_gb=0.08,
+        id='whisper-tiny', repo='Systran/faster-whisper-tiny',
+        label='Whisper tiny', engine=ENGINE_FASTER_WHISPER, size_gb=0.08,
+        apple=dict(repo='mlx-community/whisper-tiny-mlx',
+                   engine=ENGINE_MLX_WHISPER),
         word_timings=True, needs_alignment=False, tier='fast',
         notes='Fastest, lowest accuracy. Useful for a rough first pass.',
     ),
@@ -232,8 +275,24 @@ DIARIZER_MODEL = {
 EXTRA_MODELS = {m['id']: m for m in (ALIGNER_MODEL, DIARIZER_MODEL)}
 
 
-def is_apple_silicon():
-    return platform.system() == 'Darwin' and platform.machine() in ('arm64', 'aarch64')
+def _torch_stack_mb():
+    """
+    Rough on-disk cost of the torch runtimes, which is not the same everywhere.
+
+    PyPI's default torch wheel for Linux is the CUDA build and drags in the
+    nvidia-* packages with it — around 3 GB whether or not the machine has an
+    NVIDIA card. Windows and macOS get CPU and MPS builds respectively, which
+    are a fraction of that. Quoting one flat figure understates Linux badly
+    enough that the disk-space check would pass and the install would then fail.
+    """
+    if is_apple_silicon() or platform.system() == 'Darwin':
+        return 2500
+    if os.name == 'nt':
+        return 900
+    return 3600
+
+
+TORCH_STACK_MB = _torch_stack_mb()
 
 
 def has_nvidia():
@@ -286,7 +345,7 @@ RUNTIMES = {
         'packages': ['transformers>=4.40.0', 'torch>=2.2.0', 'torchaudio>=2.2.0'],
         'module': 'transformers',
         'platforms': ['any'],
-        'size_mb': 2500,
+        'size_mb': TORCH_STACK_MB,
         'notes': ('Needed for Cohere Transcribe, and it also provides the '
                   'word-timing aligner. Large download.'),
     },
@@ -296,7 +355,7 @@ RUNTIMES = {
         'packages': ['transformers>=4.52.1', 'torch>=2.2.0', 'torchaudio>=2.2.0'],
         'module': 'transformers',
         'platforms': ['any'],
-        'size_mb': 2500,
+        'size_mb': TORCH_STACK_MB,
         'notes': ('Same underlying packages as Transformers + PyTorch, pinned to '
                   'a newer transformers release — Granite Speech\'s processor '
                   'classes only exist from 4.52.1 onward. Already satisfied if '
@@ -318,7 +377,7 @@ RUNTIMES = {
         'packages': ['demucs>=4.0.0', 'torch>=2.2.0', 'torchaudio>=2.2.0'],
         'module': 'demucs',
         'platforms': ['any'],
-        'size_mb': 2400,
+        'size_mb': TORCH_STACK_MB,
         'notes': ('Isolates the dialogue from a music bed before transcribing. The '
                   'single biggest accuracy gain on advertising and promo material, '
                   'at the cost of a slow extra pass.'),
@@ -329,7 +388,7 @@ RUNTIMES = {
         'packages': ['speechbrain>=1.0.0', 'torch>=2.2.0', 'torchaudio>=2.2.0'],
         'module': 'speechbrain',
         'platforms': ['any'],
-        'size_mb': 2300,
+        'size_mb': TORCH_STACK_MB,
         'notes': ('Works out who is speaking, so each caption holds one voice and '
                   'carries their name. Shares torch with the aligner, so on top of '
                   'that runtime it is a small extra download.'),
@@ -340,7 +399,7 @@ RUNTIMES = {
         'packages': ['torch>=2.2.0', 'torchaudio>=2.2.0'],
         'module': 'torchaudio',
         'platforms': ['any'],
-        'size_mb': 2200,
+        'size_mb': TORCH_STACK_MB,
         'notes': ('Powers the forced aligner, which measures per-word times '
                   'instead of inferring them. Strongly recommended for captions.'),
     },
@@ -470,7 +529,21 @@ def describe(model):
 
 
 def list_models():
-    return [describe(m) for m in MODELS.values()]
+    """
+    The models this machine can actually run.
+
+    A model whose only published weights need a runtime this platform cannot
+    install would sit in the list permanently unavailable, with the runtime that
+    would fix it correctly hidden from Settings — a dead end. Better not to
+    offer it. get() still resolves any id, so a project made on another machine
+    still opens.
+    """
+    return [describe(m) for m in MODELS.values() if model_supported(m)]
+
+
+def model_supported(model):
+    plats = model.get('platforms') or ['any']
+    return 'any' in plats or platform_tag() in plats
 
 
 def get(model_id):
@@ -484,13 +557,16 @@ def recommended(purpose='accuracy'):
     On Apple Silicon the MLX engines run on the GPU while faster-whisper is
     stuck on CPU, so the recommendation differs from a CUDA box.
     """
+    # Never name a model this machine cannot run: Parakeet and Qwen3-ASR are
+    # published only as MLX weights, so off Apple Silicon the recommendation
+    # falls back to the best portable model for the same purpose.
     if purpose == 'fast':
         return 'parakeet-tdt-0.6b-v2' if is_apple_silicon() else 'whisper-large-v3-turbo'
     if purpose == 'multilingual':
-        return 'qwen3-asr-1.7b'
+        return 'qwen3-asr-1.7b' if is_apple_silicon() else 'cohere-transcribe-2b'
     if purpose == 'english':
-        return 'parakeet-tdt-0.6b-v2'
-    return 'qwen3-asr-1.7b'
+        return 'parakeet-tdt-0.6b-v2' if is_apple_silicon() else 'distil-large-v3'
+    return 'qwen3-asr-1.7b' if is_apple_silicon() else 'cohere-transcribe-2b'
 
 
 def free_disk_bytes():

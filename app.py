@@ -22,6 +22,7 @@ import socketserver
 import uuid
 import webbrowser
 
+import version
 from transcriber import Transcriber
 from fonts import FontIndex
 
@@ -46,6 +47,14 @@ def find_available_port(default_port=8000):
 
 def find_ffmpeg():
     """Locate an ffmpeg binary, including the usual GUI-app-blind spots."""
+    # The bundled copy wins over anything on PATH: it is the build we tested the
+    # ProRes export against, and installed users should not silently inherit
+    # whatever ffmpeg happens to be on the machine.
+    bundled = os.path.join(DIRECTORY, 'bin',
+                           'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+        return bundled
+
     found = shutil.which('ffmpeg')
     if found:
         return found
@@ -193,6 +202,7 @@ class ExportApi:
         return {
             'ok': True,
             'native': True,
+            'version': version.__version__,
             'ffmpeg': bool(ffmpeg),
             'ffmpeg_path': ffmpeg or '',
         }

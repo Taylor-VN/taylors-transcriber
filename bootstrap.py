@@ -32,6 +32,7 @@ anything is installed.
 import hashlib
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import venv
@@ -43,6 +44,18 @@ VENV_OVERRIDE_ENV = 'TRANSCRIBER_VENV'
 APP_DIR_NAME = 'TaylorsTranscriber'
 
 MIN_PYTHON = (3, 9)
+
+# Written into the app directory by the packaging scripts. Its presence is what
+# separates an installed copy (DMG / setup.exe / AppImage) from a source
+# checkout, and it changes three things: the environment is keyed by app
+# identity rather than by folder path, the base dependencies are already present
+# inside the bundle so first launch needs no network, and the environment is
+# created with access to the bundle's own site-packages.
+BUNDLE_MARKER = os.path.join(PROJECT_DIR, '.bundled')
+
+
+def is_bundled():
+    return os.path.isfile(BUNDLE_MARKER)
 
 
 def app_support_dir():
@@ -81,13 +94,18 @@ def resolve_venv_dir():
     override = os.environ.get(VENV_OVERRIDE_ENV)
     if override:
         return os.path.abspath(os.path.expanduser(override))
+    # An installed app has one identity and one environment, whatever folder it
+    # was installed into. That is what lets an update installed over the top keep
+    # the multi-gigabyte runtimes the user added from Settings. Source checkouts
+    # stay keyed by path, so several clones never share an environment.
+    name = 'venv' if is_bundled() else f'venv-{_project_key()}'
     try:
         base = app_support_dir()
         os.makedirs(base, exist_ok=True)
-        return os.path.join(base, f'venv-{_project_key()}')
+        return os.path.join(base, name)
     except OSError:
         import tempfile
-        return os.path.join(tempfile.gettempdir(), f'{APP_DIR_NAME}-venv-{_project_key()}')
+        return os.path.join(tempfile.gettempdir(), f'{APP_DIR_NAME}-{name}')
 
 
 VENV_DIR = resolve_venv_dir()
@@ -103,6 +121,11 @@ def base_requirements():
     pull one. Asking for the right extra explicitly avoids the "you must have
     either PyObjC or Qt installed" failure at startup.
     """
+    if is_bundled():
+        # Already inside the bundle's own interpreter. The environment is created
+        # with system-site-packages so it can see them, so there is nothing to
+        # fetch and the first launch works with no network at all.
+        return []
     reqs = ['huggingface-hub>=0.23.0']
     if sys.platform == 'darwin':
         reqs.insert(0, 'pywebview[cocoa]>=4.4')
@@ -198,8 +221,51 @@ def create_venv():
     _log(f'Creating a virtual environment at {VENV_DIR}')
     # with_pip=True gives us pip inside the venv without needing ensurepip
     # separately; symlinks keep it small on Unix.
-    builder = venv.EnvBuilder(with_pip=True, symlinks=(os.name != 'nt'), upgrade=False)
+    #
+    # A bundled build layers its environment on top of the interpreter shipped
+    # inside the app, which already carries pywebview and huggingface-hub. The
+    # environment then holds only the optional runtimes the user chooses to
+    # install, and anything installed there still shadows the bundled copy.
+    builder = venv.EnvBuilder(with_pip=True, symlinks=(os.name != 'nt'),
+                              system_site_packages=is_bundled(), upgrade=False)
     builder.create(VENV_DIR)
+
+
+def venv_is_usable():
+    """
+    True when the existing environment still works with the interpreter we are.
+
+    A virtual environment is bound to the exact minor version of the interpreter
+    that created it — its site-packages lives under lib/pythonX.Y. When an app
+    update ships a newer Python, the old environment silently stops resolving
+    imports, so it has to be rebuilt rather than limped along. Releases keep the
+    bundled Python's minor version fixed precisely so this stays rare: it costs
+    the user their installed runtimes.
+    """
+    py = venv_python()
+    if not os.path.isfile(py):
+        return False
+    try:
+        out = subprocess.run(
+            [py, '-c', 'import sys; print("%d.%d" % sys.version_info[:2])'],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if out.returncode != 0:
+        return False
+    return out.stdout.strip() == '%d.%d' % sys.version_info[:2]
+
+
+def rebuild_venv():
+    """Discard an environment the current interpreter can no longer use."""
+    _log('The app environment was built for a different Python and must be '
+         'rebuilt. Speech runtimes installed from Settings will need '
+         'installing again.')
+    try:
+        shutil.rmtree(VENV_DIR)
+    except OSError as e:
+        sys.exit(f'Could not remove the stale environment at {VENV_DIR}:\n  {e}')
+    create_venv()
 
 
 def pip_install(args, python=None, quiet=True):
@@ -212,8 +278,13 @@ def pip_install(args, python=None, quiet=True):
 
 
 def install_base_requirements():
-    _log('Installing base dependencies (one-time, ~20 MB)…')
     globals()['BASE_REQUIREMENTS'] = base_requirements()
+    if not BASE_REQUIREMENTS:
+        # Bundled build: nothing to fetch, just record what this environment was
+        # built against so a later app update notices the change.
+        write_stamp()
+        return True
+    _log('Installing base dependencies (one-time, ~20 MB)…')
     # Upgrading pip first avoids a class of resolver and wheel-format failures
     # on the pip that ships inside older venvs.
     subprocess.run([venv_python(), '-m', 'pip', 'install', '-q', '--upgrade',
@@ -255,6 +326,9 @@ def ensure_environment(argv=None):
     if legacy_venv_is_stale():
         _log(f'Note: the old in-project environment at {LEGACY_VENV_DIR} is no longer '
              'used and can be deleted.')
+
+    if os.path.isdir(VENV_DIR) and not venv_is_usable():
+        rebuild_venv()
 
     if not os.path.isfile(venv_python()):
         try:

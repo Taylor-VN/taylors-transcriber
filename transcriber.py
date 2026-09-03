@@ -36,6 +36,7 @@ import diarize
 import model_registry as registry
 import engines as engines_mod
 import vocabulary as vocab
+import version
 
 TERMINAL_STATES = ('done', 'error', 'cancelled')
 
@@ -144,6 +145,8 @@ class Transcriber:
 
         return {
             'ok': True,
+            'version': version.__version__,
+            'bundled': bootstrap.is_bundled(),
             'available': len(available_engines) > 0,
             'engines': available_engines,
             'engine_labels': registry.ENGINE_LABELS,

@@ -100,6 +100,9 @@ class SettingsController {
     const el = document.getElementById('settingsSystemInfo');
     const lines = [];
 
+    if (p.version) {
+      lines.push(`Version ${p.version}${p.bundled ? '' : ' (running from source)'}`);
+    }
     lines.push(`Device: ${p.device_name}`);
 
     const engines = p.engines || [];

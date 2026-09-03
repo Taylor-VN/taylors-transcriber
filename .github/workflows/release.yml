@@ -1,0 +1,116 @@
+name: Release
+
+# Cutting a release is one action: push a tag. Everything below follows from it.
+#
+#   git tag -a v1.1.0 -m "…" && git push origin v1.1.0
+#
+# The three installers are built in parallel and attached to a *draft* release,
+# so the notes can be written and reviewed before anyone can download it.
+# workflow_dispatch builds the same artifacts without creating a release, which
+# is how to test a packaging change without burning a version number.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # A tag that disagrees with version.py would ship installers whose About box
+  # lies about what they are. Fail here, before spending 20 minutes building.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match version.py
+        run: |
+          FILE=$(python3 -c 'import version; print(version.__version__)')
+          echo "version.py says $FILE"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#v}"
+            echo "tag says $TAG"
+            [ "$TAG" = "$FILE" ] || {
+              echo "::error::Tag $GITHUB_REF_NAME does not match version.py ($FILE). Bump version.py and re-tag."
+              exit 1
+            }
+          fi
+
+  macos:
+    needs: check-version
+    # macos-14 and later are Apple Silicon, which is what this DMG targets.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Build DMG
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Set MACOS_SIGN_IDENTITY (and import a Developer ID certificate
+          # first) to produce a signed build — see RELEASING.md. Without it the
+          # bundle is ad-hoc signed, which is enough to run but not enough to
+          # satisfy Gatekeeper.
+        run: bash packaging/macos/build_dmg.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+
+  windows:
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Build installer
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pwsh packaging/windows/build_installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+
+  linux:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AppImage
+        # Built in RHEL 8 (glibc 2.28) rather than on the runner itself, so the
+        # result runs on Rocky Linux 8 and 9. See packaging/linux/build_appimage.sh.
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e HOST_PYTHON=/opt/python/cp312-cp312/bin/python3 \
+            -e GITHUB_TOKEN="${{ github.token }}" \
+            -e HOME=/tmp \
+            -u "$(id -u):$(id -g)" \
+            quay.io/pypa/manylinux_2_28_x86_64 \
+            bash packaging/linux/build_appimage.sh /src/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.AppImage
+
+  release:
+    needs: [macos, windows, linux]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lh dist
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "Taylor's Transcriber ${GITHUB_REF_NAME#v}" \
+            --notes-file .github/release-notes-template.md \
+            dist/*
+          echo "::notice::Draft release created. Edit the notes and publish it."

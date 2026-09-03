@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 
 .DS_Store
+
+# Installer build output (packaging/)
+build/
+dist/
