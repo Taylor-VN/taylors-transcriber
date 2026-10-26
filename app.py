@@ -11,6 +11,8 @@ import os
 import sys
 import base64
 import json
+import re
+from fractions import Fraction
 import secrets
 import shutil
 import socket
@@ -33,6 +35,62 @@ except ImportError:  # pragma: no cover - only hit when pywebview is missing
 
 
 DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+
+
+def preferences_path():
+    # Imported late: bootstrap is only importable once the app has settled its
+    # environment, and preferences are never read before then.
+    import bootstrap
+    return os.path.join(bootstrap.app_support_dir(), 'preferences.json')
+
+
+def load_preferences():
+    """
+    App-wide settings that have to outlive a launch. Kept on disk rather than in
+    the page's localStorage, because the native window runs in private mode and
+    forgets its storage every time it closes.
+    """
+    try:
+        with open(preferences_path(), 'r', encoding='utf-8') as fh:
+            prefs = json.load(fh)
+        return prefs if isinstance(prefs, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_preferences(prefs):
+    path = preferences_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(prefs, fh, indent=2)
+    os.replace(tmp, path)
+
+
+RECENT_PROJECTS_MAX = 8
+
+
+def add_recent_project(path):
+    """Move a project to the top of the recent list. Never fails a save or open."""
+    try:
+        path = os.path.abspath(path)
+        prefs = load_preferences()
+        recent = [p for p in (prefs.get('recent_projects') or []) if p != path]
+        prefs['recent_projects'] = ([path] + recent)[:RECENT_PROJECTS_MAX]
+        save_preferences(prefs)
+    except Exception:
+        pass
+
+
+def remove_recent_project(path):
+    try:
+        prefs = load_preferences()
+        recent = prefs.get('recent_projects') or []
+        if path in recent:
+            prefs['recent_projects'] = [p for p in recent if p != path]
+            save_preferences(prefs)
+    except Exception:
+        pass
 
 
 def find_available_port(default_port=8000):
@@ -71,6 +129,45 @@ def find_ffmpeg():
     return None
 
 
+def ffmpeg_rate(fps):
+    """
+    A frame rate as an exact ffmpeg rational. 29.97 passed as a decimal is not
+    30000/1001, and the drift shows up as caption/picture slip over a long cut,
+    so the broadcast rates are snapped to their real fractions.
+    """
+    try:
+        value = float(fps)
+    except (TypeError, ValueError):
+        return '25'
+    if value <= 0:
+        return '25'
+    for nominal in (24, 30, 60, 120):
+        ntsc = nominal * 1000 / 1001
+        if abs(value - ntsc) < 0.01:
+            return f'{nominal * 1000}/1001'
+    if abs(value - round(value)) < 1e-6:
+        return str(int(round(value)))
+    frac = Fraction(value).limit_denominator(1001)
+    return f'{frac.numerator}/{frac.denominator}'
+
+
+def pick_h264_encoder(ffmpeg):
+    """
+    The best H.264 encoder this ffmpeg has. The bundled build is LGPL and so
+    cannot contain libx264 (GPL); it uses VideoToolbox on macOS instead. A
+    system ffmpeg usually has libx264, which gives better quality per byte.
+    """
+    try:
+        out = subprocess.run([ffmpeg, '-hide_banner', '-encoders'],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return None
+    for name in ('libx264', 'h264_videotoolbox', 'libopenh264', 'mpeg4'):
+        if re.search(r'^\s*V\S*\s+' + name + r'\s', out, re.M):
+            return name
+    return None
+
+
 # Shared secret for the HTTP bridge used by the browser fallback. Regenerated
 # every launch; without it the API endpoints refuse to answer, so another local
 # process or a web page cannot drive the backend.
@@ -94,6 +191,7 @@ BRIDGE_METHODS = {
     'model_install_cancel', 'model_remove',
     'runtimes_list', 'runtime_install', 'runtime_install_status',
     'begin_export', 'write_frame', 'repeat_frame', 'encode_prores', 'cleanup_export',
+    'export_folder_get', 'export_folder_clear',
 }
 
 MAX_BRIDGE_BODY = 64 * 1024 * 1024  # frames and audio chunks are the large ones
@@ -366,13 +464,27 @@ class ExportApi:
                 return {'ok': False, 'error': 'ffmpeg was not found on this system.'}
 
             opts = opts or {}
-            fps = opts.get('fps', 25)
+            # The UI sends an exact ratio ("24000/1001"); fall back to snapping a
+            # bare number so an older caller still gets the right rational.
+            ratio = str(opts.get('fps_ratio') or '')
+            fps = ratio if re.fullmatch(r'\d+(/\d+)?', ratio) else ffmpeg_rate(opts.get('fps', 25))
+            # Timecode of the .mov's first frame; ';' before the frames marks drop-frame.
+            timecode = str(opts.get('timecode') or '')
+            if not re.fullmatch(r'\d{2}:\d{2}:\d{2}[:;]\d{2}', timecode):
+                timecode = ''
             profile = int(opts.get('profile', 4))  # 4 = ProRes 4444, 5 = 4444 XQ
             filename = opts.get('filename') or 'subtitles_alpha.mov'
             if not filename.lower().endswith('.mov'):
                 filename += '.mov'
 
-            out_path = self._ask_save_path(filename)
+            # A chosen export folder skips the dialog altogether. If it has gone
+            # missing — an unplugged drive — fall back to asking rather than
+            # failing a render that has already been drawn.
+            folder = self._export_folder()
+            if folder:
+                out_path = os.path.join(folder, os.path.basename(filename))
+            else:
+                out_path = self._ask_save_path(filename)
             if not out_path:
                 return {'ok': False, 'error': 'Export cancelled.'}
 
@@ -386,14 +498,133 @@ class ExportApi:
                 '-alpha_bits', '16',
                 '-vendor', 'apl0',
                 '-r', str(fps),
-                out_path,
             ]
+            if timecode:
+                cmd += ['-timecode', timecode]
+            cmd.append(out_path)
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
                 tail = (proc.stderr or '').strip().splitlines()[-6:]
                 return {'ok': False, 'error': 'ffmpeg failed:\n' + '\n'.join(tail)}
 
             return {'ok': True, 'path': out_path}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def locate_source_media(self, name, known=''):
+        """
+        The page only ever holds a File object, which in a webview carries no
+        filesystem path, and ffmpeg needs a real one. So the operator points at
+        the footage once through a native dialog and the page remembers the
+        answer for the session. `known` short-circuits the dialog when the
+        remembered file is still there.
+        """
+        try:
+            if known and os.path.isfile(known):
+                return {'ok': True, 'path': known}
+            if webview is None or not webview.windows:
+                return {'ok': False, 'error': 'Locating the footage needs the desktop window.'}
+            result = webview.windows[0].create_file_dialog(
+                webview.OPEN_DIALOG,
+                directory=os.path.expanduser('~'),
+                allow_multiple=False,
+                file_types=("Video or audio (*.mp4;*.mov;*.m4v;*.mkv;*.avi;*.mxf;*.webm;*.mp3;*.wav;*.m4a)",
+                            "All files (*.*)"),
+            )
+            if not result:
+                return {'ok': False, 'error': 'cancelled'}
+            path = result if isinstance(result, str) else result[0]
+            return {'ok': True, 'path': path}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def build_review_command(self, ffmpeg, encoder, frames_dir, opts, out_path):
+        """The ffmpeg argv for a review copy. Split out so it can be tested alone."""
+        rate = ffmpeg_rate(opts.get('fps', 25))
+        width = int(opts.get('width') or 1920)
+        height = int(opts.get('height') or 1080)
+        scale = float(opts.get('scale') or 1)
+        # H.264 in yuv420p needs even dimensions.
+        w = max(2, int(round(width * scale / 2)) * 2)
+        h = max(2, int(round(height * scale / 2)) * 2)
+        start = max(0.0, float(opts.get('start') or 0))
+        duration = max(0.0, float(opts.get('duration') or 0))
+
+        # The footage is fitted inside the project frame (bars where the aspect
+        # differs) and the transparent caption frames, already drawn at project
+        # size, are laid over it. Nothing is rasterised from the video element.
+        graph = (
+            f'[0:v]fps={rate},'
+            f'scale={w}:{h}:force_original_aspect_ratio=decrease,'
+            f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[bg];'
+            f'[1:v]format=rgba,scale={w}:{h}[fg];'
+            f'[bg][fg]overlay=eof_action=pass:format=auto,format=yuv420p[v]'
+        )
+        cmd = [ffmpeg, '-y', '-hide_banner']
+        if start > 0:
+            cmd += ['-ss', f'{start:.6f}']
+        cmd += ['-i', opts['source_path'],
+                '-framerate', rate,
+                '-i', os.path.join(frames_dir, 'frame_%06d.png'),
+                '-filter_complex', graph,
+                '-map', '[v]', '-map', '0:a:0?']
+        if duration > 0:
+            cmd += ['-t', f'{duration:.6f}']
+        cmd += ['-c:v', encoder]
+        if encoder == 'libx264':
+            cmd += ['-crf', '20', '-preset', 'medium']
+        elif encoder == 'mpeg4':
+            cmd += ['-q:v', '3']
+        else:
+            # No constant-quality mode that every build honours, so size the
+            # bitrate from the frame: about 0.1 bit per pixel is a clean review.
+            frame_rate = float(Fraction(rate))
+            cmd += ['-b:v', str(int(w * h * frame_rate * 0.1))]
+        cmd += ['-pix_fmt', 'yuv420p',
+                '-c:a', 'aac', '-b:a', '192k',
+                '-movflags', '+faststart',
+                out_path]
+        return cmd
+
+    def encode_review(self, job_id, opts):
+        """Composite the rendered caption frames over the source footage as H.264."""
+        try:
+            job = self.jobs.get(job_id)
+            if not job:
+                return {'ok': False, 'error': 'Unknown export job.'}
+
+            ffmpeg = find_ffmpeg()
+            if not ffmpeg:
+                return {'ok': False, 'error': 'ffmpeg was not found on this system.'}
+
+            opts = opts or {}
+            source = opts.get('source_path') or ''
+            if not source or not os.path.isfile(source):
+                return {'ok': False, 'error': 'The source footage could not be found.'}
+
+            encoder = pick_h264_encoder(ffmpeg)
+            if not encoder:
+                return {'ok': False, 'error': 'This ffmpeg has no H.264 encoder.'}
+
+            filename = opts.get('filename') or 'review_copy.mp4'
+            if not filename.lower().endswith('.mp4'):
+                filename += '.mp4'
+
+            folder = self._export_folder()
+            if folder:
+                out_path = os.path.join(folder, os.path.basename(filename))
+            else:
+                out_path = self._ask_save_path(filename)
+            if not out_path:
+                return {'ok': False, 'error': 'Export cancelled.'}
+
+            cmd = self.build_review_command(ffmpeg, encoder, job['dir'], opts, out_path)
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                tail = (proc.stderr or '').strip().splitlines()[-6:]
+                return {'ok': False, 'error': 'ffmpeg failed:\n' + '\n'.join(tail)}
+
+            return {'ok': True, 'path': out_path, 'encoder': encoder}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
@@ -407,15 +638,82 @@ class ExportApi:
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
-    # --- generic file save (used by SRT/VTT/XML/preset exports too) --------
-    def save_text_file(self, filename, content):
+    # --- export folder ----------------------------------------------------
+    def _export_folder(self):
+        """The saved export folder, or '' when unset or no longer there."""
+        folder = load_preferences().get('export_folder') or ''
+        return folder if folder and os.path.isdir(folder) else ''
+
+    def export_folder_get(self):
+        saved = load_preferences().get('export_folder') or ''
+        return {'ok': True, 'path': saved,
+                'exists': bool(saved) and os.path.isdir(saved)}
+
+    def export_folder_choose(self):
         try:
-            out_path = self._ask_save_path(filename)
+            if webview is None or not webview.windows:
+                return {'ok': False, 'error': 'Choosing a folder needs the desktop window.'}
+            current = self._export_folder() or os.path.expanduser('~')
+            result = webview.windows[0].create_file_dialog(
+                webview.FOLDER_DIALOG, directory=current)
+            if not result:
+                return {'ok': False, 'error': 'cancelled'}
+            folder = result if isinstance(result, str) else result[0]
+            prefs = load_preferences()
+            prefs['export_folder'] = folder
+            save_preferences(prefs)
+            return {'ok': True, 'path': folder, 'exists': True}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def export_folder_clear(self):
+        try:
+            prefs = load_preferences()
+            prefs.pop('export_folder', None)
+            save_preferences(prefs)
+            return {'ok': True, 'path': '', 'exists': False}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    # --- generic file save (used by SRT/VTT/XML/preset exports too) --------
+    def _export_folder_path(self, filename):
+        """Where a file would land in the export folder, or None when it's unset."""
+        folder = self._export_folder()
+        if not folder:
+            return None
+        # basename: the name comes from the page, never let it climb out of the folder.
+        return os.path.join(folder, os.path.basename(filename))
+
+    def save_text_file(self, filename, content, use_export_folder=False):
+        # use_export_folder is opt-in: caption exports want the saved folder, but
+        # style presets (.prfpset) share this method and should keep asking.
+        try:
+            out_path = (self._export_folder_path(filename) if use_export_folder else None)
+            in_folder = bool(out_path)
+            if not out_path:
+                out_path = self._ask_save_path(filename)
             if not out_path:
                 return {'ok': False, 'error': 'Save cancelled.'}
             with open(out_path, 'w', encoding='utf-8') as fh:
                 fh.write(content)
-            return {'ok': True, 'path': out_path}
+            return {'ok': True, 'path': out_path, 'in_export_folder': in_folder}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def save_binary_file(self, filename, b64, use_export_folder=False):
+        # Same dialog / export-folder behaviour as save_text_file, but the page
+        # sends bytes (base64) because EBU-STL is a binary format.
+        try:
+            data = base64.b64decode(b64)
+            out_path = (self._export_folder_path(filename) if use_export_folder else None)
+            in_folder = bool(out_path)
+            if not out_path:
+                out_path = self._ask_save_path(filename)
+            if not out_path:
+                return {'ok': False, 'error': 'Save cancelled.'}
+            with open(out_path, 'wb') as fh:
+                fh.write(data)
+            return {'ok': True, 'path': out_path, 'in_export_folder': in_folder}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
@@ -439,6 +737,7 @@ class ExportApi:
                         'error': f'The folder "{parent}" no longer exists. Use Save As.'}
             with open(out_path, 'w', encoding='utf-8') as fh:
                 fh.write(content)
+            add_recent_project(out_path)
             return {'ok': True, 'path': out_path}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
@@ -450,7 +749,35 @@ class ExportApi:
                 return {'ok': False, 'error': 'Open cancelled.'}
             with open(in_path, 'r', encoding='utf-8') as fh:
                 content = fh.read()
+            add_recent_project(in_path)
             return {'ok': True, 'path': in_path, 'content': content}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def project_open_path(self, path):
+        """Open a project without a dialog (Open Recent). Not on the bridge: it reads any path."""
+        try:
+            if not path or not os.path.isfile(path):
+                # Moved or deleted: drop it so the menu stops offering it.
+                remove_recent_project(path)
+                return {'ok': False, 'error': f'"{os.path.basename(path or "")}" no longer exists, '
+                                              'so it was removed from the recent list.'}
+            with open(path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+            add_recent_project(path)
+            return {'ok': True, 'path': path, 'content': content}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def project_recent_get(self):
+        return {'ok': True, 'projects': load_preferences().get('recent_projects') or []}
+
+    def project_recent_clear(self):
+        try:
+            prefs = load_preferences()
+            prefs.pop('recent_projects', None)
+            save_preferences(prefs)
+            return {'ok': True, 'projects': []}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 

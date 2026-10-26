@@ -54,6 +54,40 @@ def _read_wav_mono16k(path):
     return samples, rate
 
 
+def _quiet_chunks(samples, rate, max_len, search_sec=6.0, frame_sec=0.05):
+    """
+    Splits audio into windows no longer than max_len samples, ending each one
+    at the quietest moment in its last few seconds rather than at a fixed
+    mark. A cut through the middle of a word garbles it on both sides of the
+    join; a cut in a breath between words costs nothing.
+
+    Yields (start, stop) sample ranges covering the whole signal.
+    """
+    total = len(samples)
+    frame = max(1, int(frame_sec * rate))
+    search = int(search_sec * rate)
+    start = 0
+    while start < total:
+        limit = start + max_len
+        if limit >= total:
+            yield start, total
+            return
+        best, best_energy = limit, None
+        # Score each short frame in the search zone by its energy and take the
+        # quietest; ties go to the later frame so windows stay full.
+        pos = max(start + frame, limit - search)
+        while pos + frame <= limit:
+            energy = 0
+            for i in range(pos, pos + frame, 4):   # every 4th sample is plenty
+                v = samples[i]
+                energy += v * v
+            if best_energy is None or energy <= best_energy:
+                best, best_energy = pos + frame // 2, energy
+            pos += frame
+        yield start, best
+        start = best
+
+
 def supported_kwargs(func, candidates):
     """
     Keep only the arguments `func` actually accepts.
@@ -304,7 +338,10 @@ class ParakeetMlxEngine(BaseEngine):
         text = (getattr(raw, 'text', '') or '').strip() \
             or ' '.join(s['text'] for s in segments).strip()
 
-        return {'segments': segments, 'words': words, 'language': 'en', 'text': text}
+        # v2 is English-only; v3 identifies the language itself and does not
+        # report it, so echo back what was asked for.
+        language = 'en' if self.model.get('english_only') else self._lang(options)
+        return {'segments': segments, 'words': words, 'language': language, 'text': text}
 
 
 class Qwen3AsrMlxEngine(BaseEngine):
@@ -553,7 +590,10 @@ class GraniteSpeechEngine(BaseEngine):
         instruction = 'transcribe the speech with proper punctuation and capitalization.'
         terms = options.get('terms') or []
         if terms:
-            instruction = f'transcribe the speech to text. Keywords: {", ".join(terms)}.'
+            # Keep the punctuation request: without it the model returns bare
+            # lowercase text, which is no use as a caption.
+            instruction = ('transcribe the speech with proper punctuation and capitalization. '
+                           f'Keywords: {", ".join(terms)}.')
         chat = [{'role': 'user', 'content': f'<|audio|>{instruction}'}]
         prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
 
@@ -561,8 +601,8 @@ class GraniteSpeechEngine(BaseEngine):
         total = len(samples)
         pieces = []
 
-        for start in range(0, total, chunk_len):
-            chunk = samples[start:start + chunk_len]
+        for start, stop in _quiet_chunks(samples, rate, chunk_len):
+            chunk = samples[start:stop]
             if not chunk:
                 continue
             wav = torch.tensor(chunk.tolist(), dtype=torch.float32).div(32768.0).unsqueeze(0)
@@ -581,8 +621,7 @@ class GraniteSpeechEngine(BaseEngine):
                 pieces.append(piece)
 
             if progress_cb:
-                progress_cb(min(0.95, 0.1 + 0.85 * min(start + chunk_len, total) / total),
-                           'Transcribing…')
+                progress_cb(min(0.95, 0.1 + 0.85 * stop / total), 'Transcribing…')
 
         text = ' '.join(pieces)
         segments = [{'start': 0.0, 'end': total / float(rate or 16000),

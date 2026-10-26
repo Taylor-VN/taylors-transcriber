@@ -15,6 +15,8 @@
   <svg class="icon-sprite" aria-hidden="true" focusable="false">
     <defs>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
       <symbol id="i-split" viewBox="0 0 24 24"><path d="M12 3v7M12 14v7"/><circle cx="12" cy="12" r="2"/><path d="M5 8l3 4-3 4M19 8l-3 4 3 4"/></symbol>
       <symbol id="i-merge" viewBox="0 0 24 24"><path d="M4 7h5l3 5 3-5h5M4 17h5l3-5 3 5h5"/></symbol>
       <symbol id="i-shift" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></symbol>
@@ -52,7 +54,21 @@
         <path d="M7 15h4M13 15h4M7 11h10"></path>
       </svg>
       <span class="brand-title">Taylor's Transcriber</span>
-      <span class="brand-badge">25 FPS</span>
+      <!-- Project timing: frame rate (incl. drop-frame) and the timecode the
+           first frame carries. Both are saved with the project. -->
+      <span class="timing-pill">
+        <select id="frameRateSelect" title="Project frame rate" aria-label="Project frame rate"></select>
+        <label class="timing-start" title="Timecode of the first frame (e.g. 01:00:00:00)">
+          <span>START</span>
+          <input id="startTimecodeInput" type="text" list="startTimecodePresets" value="00:00:00:00"
+                 spellcheck="false" autocomplete="off" aria-label="Sequence start timecode">
+        </label>
+        <datalist id="startTimecodePresets">
+          <option value="00:00:00:00"></option>
+          <option value="01:00:00:00"></option>
+          <option value="10:00:00:00"></option>
+        </datalist>
+      </span>
     </div>
 
     <div class="header-controls">
@@ -82,6 +98,15 @@
               <span class="menu-item-label">Save Project As…<em>Write a new .ttproj</em></span>
               <kbd>⇧⌘S</kbd>
             </button>
+            <!-- Open Recent: filled from the backend's preferences (desktop only). -->
+            <div id="recentProjectsSection" class="hidden">
+              <div class="menu-sep"></div>
+              <div class="menu-heading">Open Recent</div>
+              <div id="recentProjectsList"></div>
+              <button id="btnClearRecentProjects" class="menu-item menu-item-quiet" role="menuitem">
+                <span class="menu-item-label">Clear Recent<em>Forget the list, not the files</em></span>
+              </button>
+            </div>
             <div class="menu-sep"></div>
             <button id="btnAddFilmMenu" class="menu-item" role="menuitem">
               <svg class="icon"><use href="#i-film"/></svg>
@@ -129,13 +154,13 @@
         </button>
 
         <input type="file" id="mediaFileInput" accept="video/*,audio/*" hidden>
-        <input type="file" id="subFileInput" accept=".srt,.vtt,.json" hidden>
+        <input type="file" id="subFileInput" accept=".srt,.vtt,.json,.ttml,.dfxp,.xml,.scc,.stl" hidden>
         <input type="file" id="presetFileInput" accept=".prfpset,.prtextstyle,.xml,.json" hidden>
         <input type="file" id="projectFileInput" accept=".ttproj,.json" hidden>
         <input type="file" id="relinkFilesInput" accept="video/*,audio/*" multiple hidden>
       </div>
 
-      <div class="timecode-display-box" title="Playhead timecode (25 fps)">
+      <div class="timecode-display-box" id="headerTimecodeBox" title="Playhead timecode">
         <span class="tc-label">TC</span>
         <span id="headerTimecode" class="tc-value">00:00:00:00</span>
       </div>
@@ -153,6 +178,10 @@
               <span class="menu-item-label">ProRes 4444 + Alpha<em>Captions only, transparent background</em></span>
               <kbd>E</kbd>
             </button>
+            <button id="btnExportReview" class="menu-item menu-item-feature" role="menuitem">
+              <svg class="icon"><use href="#i-film"/></svg>
+              <span class="menu-item-label">Review copy (H.264)<em>Footage with captions burned in, for sign-off</em></span>
+            </button>
             <div class="menu-sep"></div>
             <label class="menu-item menu-item-toggle" data-menu-keep-open>
               <input type="checkbox" id="exportSpeakerNames">
@@ -163,6 +192,15 @@
             </button>
             <button id="btnExportVtt" class="menu-item" role="menuitem">
               <span class="menu-item-label">WebVTT<em>subtitles.vtt</em></span>
+            </button>
+            <button id="btnExportTtml" class="menu-item" role="menuitem">
+              <span class="menu-item-label">TTML / IMSC1<em>.ttml, .dfxp</em></span>
+            </button>
+            <button id="btnExportScc" class="menu-item" role="menuitem">
+              <span class="menu-item-label">Scenarist SCC<em>CEA-608 pop-on, 29.97 DF</em></span>
+            </button>
+            <button id="btnExportStl" class="menu-item" role="menuitem">
+              <span class="menu-item-label">EBU-STL<em>Tech 3264, .stl</em></span>
             </button>
             <button id="btnExportXml" class="menu-item" role="menuitem">
               <span class="menu-item-label">Premiere Sequence<em>FCP7 xmeml</em></span>
@@ -220,6 +258,8 @@
           <button id="btnMergeSubtitle" class="btn-icon" title="Merge the selected caption with the next"><svg class="icon"><use href="#i-merge"/></svg></button>
           <button id="btnShiftTimecodes" class="btn-icon" title="Shift every timecode by an offset"><svg class="icon"><use href="#i-shift"/></svg></button>
           <button id="btnRippleDelete" class="btn-icon" title="Ripple delete the selected caption"><svg class="icon"><use href="#i-ripple"/></svg></button>
+          <button id="btnUndo" class="btn-icon" title="Undo (Cmd/Ctrl+Z)" disabled><svg class="icon"><use href="#i-undo"/></svg></button>
+          <button id="btnRedo" class="btn-icon" title="Redo (Cmd/Ctrl+Shift+Z)" disabled><svg class="icon"><use href="#i-redo"/></svg></button>
           <button id="btnClearAll" class="btn-icon btn-icon-danger" title="Clear all captions"><svg class="icon"><use href="#i-trash"/></svg></button>
         </div>
       </div>
@@ -228,7 +268,23 @@
         <input type="text" id="subSearchInput" placeholder="Search captions..." class="input-search">
         <button id="btnReviewFilter" class="btn-xs hidden"
           title="Show only captions the model was unsure about">Review <span id="reviewCount">0</span></button>
+        <button id="btnIssueFilter" class="btn-xs hidden"
+          title="Show only captions that break the delivery limits (reading speed, line length, line count, minimum duration)">Issues <span id="issueCount">0</span></button>
+        <button id="btnFindReplace" class="btn-xs" title="Find and replace (Ctrl/⌘ + Alt + F)" aria-expanded="false">Replace</button>
         <span id="subCountBadge" class="count-badge">0 lines</span>
+      </div>
+
+      <div class="replace-bar hidden" id="replaceBar">
+        <div class="replace-row">
+          <input type="text" id="subReplaceInput" placeholder="Replace with..." class="input-search" spellcheck="false">
+          <button id="btnReplaceNext" class="btn-xs" title="Replace the next match and move on (Enter)">Replace</button>
+          <button id="btnReplaceAll" class="btn-xs btn-primary" title="Replace every match in scope">Replace all</button>
+        </div>
+        <div class="replace-row replace-options">
+          <label class="replace-opt" title="Match upper and lower case exactly"><input type="checkbox" id="replMatchCase"> Match case</label>
+          <label class="replace-opt" title="Only match whole words"><input type="checkbox" id="replWholeWord"> Whole word</label>
+          <label class="replace-opt" title="Replace all also edits the other aspect ratios of this film"><input type="checkbox" id="replAllRatios"> All ratios</label>
+        </div>
       </div>
 
       <div class="captions-list-container" id="captionsList">
@@ -529,6 +585,12 @@
             <input type="range" id="bottomMargin" min="10" max="250" value="50" class="input-range">
             <span id="bottomMarginVal" class="range-val">50px</span>
           </div>
+          <div class="input-row margin-top-sm">
+            <span class="input-lbl" title="How far across the frame a line may run before it wraps onto the next line">Line Width</span>
+            <input type="range" id="textWidth" min="30" max="100" step="1" value="85" class="input-range"
+                   title="How far across the frame a line may run before it wraps, as a share of the frame width">
+            <span id="textWidthVal" class="range-val">85%</span>
+          </div>
         </div>
 
         <!-- Animation Effects -->
@@ -624,7 +686,7 @@
       </div>
       <div class="modal-body">
         <div class="shortcut-row"><kbd>Space</kbd> <span>Play / Pause Video</span></div>
-        <div class="shortcut-row"><kbd>←</kbd> / <kbd>→</kbd> <span>Step 1 Frame Back / Forward (@ 25 FPS)</span></div>
+        <div class="shortcut-row"><kbd>←</kbd> / <kbd>→</kbd> <span>Step 1 Frame Back / Forward (at the project frame rate)</span></div>
         <div class="shortcut-row"><kbd>Shift + ← / →</kbd> <span>Jump 1 Second Back / Forward</span></div>
         <div class="shortcut-row"><kbd>C</kbd> <span>Split Selected Subtitle at Playhead</span></div>
         <div class="shortcut-row"><kbd>Delete / Backspace</kbd> <span>Delete Selected Subtitle</span></div>
@@ -640,6 +702,10 @@
         <div class="shortcut-row"><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> <span>Edit the 16:9 / 1:1 / 4:5 / 9:16 captions of this film</span></div>
         <div class="shortcut-row"><kbd>+</kbd> / <kbd>-</kbd> <span>Zoom Timeline In / Out</span></div>
         <div class="shortcut-row"><kbd>[</kbd> / <kbd>]</kbd> <span>Previous / Next Film in this Project</span></div>
+        <div class="shortcut-row"><kbd>Ctrl/⌘ + F</kbd> <span>Search Captions</span></div>
+        <div class="shortcut-row"><kbd>Ctrl/⌘ + Alt + F</kbd> <span>Find and Replace in Captions</span></div>
+        <div class="shortcut-row"><kbd>Ctrl/⌘ + Z</kbd> <span>Undo (captions and style, across every film and ratio)</span></div>
+        <div class="shortcut-row"><kbd>Ctrl/⌘ + Shift + Z</kbd> / <kbd>Ctrl + Y</kbd> <span>Redo</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + S</kbd> <span>Save Project</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + Shift + S</kbd> <span>Save Project As…</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + O</kbd> <span>Open Project</span></div>
@@ -673,11 +739,11 @@
   <div id="exportModal" class="modal-backdrop hidden">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Export Captions — ProRes 4444 + Alpha</h3>
+        <h3 id="exportModalTitle">Export Captions — ProRes 4444 + Alpha</h3>
         <button id="btnCloseExportModal" class="btn-icon" title="Close"><svg class="icon"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">
+        <p class="modal-hint" id="exportModalHint">
           Renders the captions only, on a fully transparent background, at the
           project resolution. Drop the result on a track above your footage in
           Premiere Pro — the alpha channel is read automatically.
@@ -701,7 +767,7 @@
 
         <div class="export-row">
           <span class="export-lbl">Frame rate</span>
-          <span class="export-val">25 fps</span>
+          <span class="export-val" id="exportFpsInfo">25 fps</span>
         </div>
 
         <div class="export-row">
@@ -712,12 +778,29 @@
           </select>
         </div>
 
-        <div class="export-row">
+        <div class="export-row" id="exportCodecRow">
           <label class="export-lbl" for="exportProfileSelect">Codec</label>
           <select id="exportProfileSelect" class="input-select">
             <option value="4">Apple ProRes 4444 (alpha)</option>
             <option value="5">Apple ProRes 4444 XQ (alpha)</option>
           </select>
+        </div>
+
+        <div class="export-row hidden" id="exportReviewScaleRow">
+          <label class="export-lbl" for="exportReviewScale">Size</label>
+          <select id="exportReviewScale" class="input-select">
+            <option value="1">Full project resolution</option>
+            <option value="0.5">Half size (smaller file)</option>
+          </select>
+        </div>
+
+        <div class="export-row" id="exportFolderRow">
+          <span class="export-lbl">Save to</span>
+          <span id="exportFolderPath" class="export-val export-folder-path" title="Renders and caption files (SRT, VTT, Premiere XML) are saved here.">Ask each time</span>
+          <button id="btnChooseExportFolder" class="btn-xs btn-outline"
+                  title="Write every render straight into this folder instead of asking where to save">Choose…</button>
+          <button id="btnClearExportFolder" class="btn-xs btn-outline hidden"
+                  title="Go back to asking where to save each render">Ask each time</button>
         </div>
 
         <div class="export-row">
@@ -1016,6 +1099,8 @@
   <script src="js/presetParser.js"></script>
   <script src="js/presetLibrary.js"></script>
   <script src="js/subtitleManager.js"></script>
+  <script src="js/captionFormats.js"></script>
+  <script src="js/undoHistory.js"></script>
   <script src="js/projectManager.js"></script>
   <script src="js/safeAreas.js"></script>
   <script src="js/videoPlayer.js"></script>

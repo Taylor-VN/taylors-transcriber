@@ -449,7 +449,12 @@ class VideoPlayerController {
     const trackingPx = ((preset.letterSpacing || 0) / 1000) * fontSize;
     if ('letterSpacing' in ctx) ctx.letterSpacing = `${trackingPx}px`;
 
-    const maxTextWidth = w * 0.85;
+    // How far across the frame a line may run before it wraps, as a share of
+    // the frame width. Left and right alignment sit on the edge of that box,
+    // so the side margin and the wrap width are the same setting.
+    const widthPct = preset.textWidth > 0 ? Math.min(100, preset.textWidth) : 85;
+    const maxTextWidth = w * (widthPct / 100);
+    const sideMargin = (w - maxTextWidth) / 2;
     const lines = this.wrapText(ctx, text, maxTextWidth);
     const lineHeight = fontSize * (preset.lineHeight > 0 ? preset.lineHeight : 1.25);
     const totalTextHeight = lines.length * lineHeight;
@@ -460,10 +465,10 @@ class VideoPlayerController {
     // Horizontal placement
     let posX = w / 2;
     if (align.includes('left')) {
-      posX = w * 0.075;
+      posX = sideMargin;
       ctx.textAlign = 'left';
     } else if (align.includes('right')) {
-      posX = w * 0.925;
+      posX = w - sideMargin;
       ctx.textAlign = 'right';
     }
 

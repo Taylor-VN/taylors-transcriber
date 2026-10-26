@@ -41,6 +41,11 @@ class ProjectManager {
    */
   constructor(opts = {}) {
     this.fps = opts.fps || 25;
+    // Project-wide timing. `frameRate` is an id from FRAME_RATES (so 29.97 DF and
+    // NDF stay distinct); `fps` above is only the nominal number, kept for
+    // readers of older files.
+    this.frameRate = opts.frameRate || '25';
+    this.startTimecode = opts.startTimecode || '00:00:00:00';
     this.defaultPreset = opts.defaultPreset || {};
     this.listeners = [];
     this.reset({ silent: true });
@@ -370,6 +375,8 @@ class ProjectManager {
       version: PROJECT_VERSION,
       name: this.name,
       fps: this.fps,
+      frameRate: this.frameRate,
+      startTimecode: this.startTimecode,
       createdAt: this.createdAt,
       savedAt: new Date().toISOString(),
       activeFilmId: this.activeId,
@@ -439,6 +446,11 @@ class ProjectManager {
     }
 
     this.name = data.name || 'Untitled Project';
+    // Projects from before the rate was a setting have neither field: 25, zero start.
+    this.frameRate = (typeof getFrameRate === 'function' && data.frameRate
+      && getFrameRate(data.frameRate).id === String(data.frameRate)) ? String(data.frameRate) : '25';
+    this.fps = Number(data.fps) || 25;
+    this.startTimecode = typeof data.startTimecode === 'string' ? data.startTimecode : '00:00:00:00';
     this.createdAt = data.createdAt || new Date().toISOString();
     this.savedAt = data.savedAt || null;
     this.films = [];

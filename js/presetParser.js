@@ -256,6 +256,7 @@ class PresetParser {
         shadowOffsetY: this.toNumber(lookup(['ShadowOffsetY', 'ShadowDistance', 'shadowOffsetY'], null)) ?? 6,
         align: this.normalizeAlign(lookup(['Alignment', 'Align', 'TextAlignment', 'align'], null)),
         bottomMargin: this.toNumber(lookup(['BottomMargin', 'SafeMargin', 'bottomMargin'], null)) ?? 75,
+        textWidth: this.toNumber(lookup(['TextBoxWidth', 'LineWidth', 'textWidth'], null)) ?? 85,
         offsetX: this.toNumber(lookup(['PositionX', 'OffsetX', 'offsetX'], null)) ?? 0,
         offsetY: this.toNumber(lookup(['PositionY', 'OffsetY', 'offsetY'], null)) ?? 0,
         animationPreset: lookup(['Animation', 'AnimationPreset', 'animationPreset'], 'none')
@@ -575,6 +576,9 @@ class PresetParser {
       shadowOffsetY: num(presetObj.shadowOffsetY, 6),
       align: this.normalizeAlign(presetObj.align),
       bottomMargin: num(presetObj.bottomMargin, 75),
+      // Wrap width as a percentage of the frame width — how close to the
+      // edges a line may run before it breaks.
+      textWidth: Math.min(100, Math.max(10, num(presetObj.textWidth, 85))),
       // Premiere's Position pair, in the same 1080-tall reference pixels the
       // rest of the style is authored against. Positive Y is down.
       offsetX: num(presetObj.offsetX, 0),
@@ -616,6 +620,7 @@ class PresetParser {
     <ShadowOffsetY>${esc(preset.shadowOffsetY)}</ShadowOffsetY>
     <Alignment>${esc(preset.align)}</Alignment>
     <BottomMargin>${esc(preset.bottomMargin)}</BottomMargin>
+    <TextBoxWidth>${esc(preset.textWidth || 85)}</TextBoxWidth>
     <PositionX>${esc(preset.offsetX || 0)}</PositionX>
     <PositionY>${esc(preset.offsetY || 0)}</PositionY>
     <AnimationPreset>${esc(preset.animationPreset)}</AnimationPreset>

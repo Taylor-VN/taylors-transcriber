@@ -43,7 +43,16 @@ cd "$WORK/ffmpeg-${FFMPEG_VERSION}"
   --enable-decoder=png \
   --enable-encoder=prores_ks \
   --enable-muxer=mov \
-  --enable-filter=null,copy,format,scale
+  --enable-filter=null,copy,format,scale \
+  --enable-videotoolbox \
+  --enable-encoder=h264_videotoolbox,aac \
+  --enable-muxer=mp4 \
+  --enable-protocol=pipe \
+  --enable-demuxer=mov,matroska,avi,mpegts,mxf,mp3,wav,flac,aac,ogg \
+  --enable-parser=h264,hevc,aac,mpegaudio,vp9,mpeg4video,flac \
+  --enable-decoder=h264,hevc,prores,mpeg4,vp9,mjpeg,aac,aac_latm,alac,mp3,flac,vorbis,opus,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_f32le \
+  --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,extract_extradata \
+  --enable-filter=overlay,pad,fps,setsar,aresample,aformat,anull
 
 make -j"$(sysctl -n hw.ncpu)"
 
@@ -62,3 +71,9 @@ echo "[ffmpeg] $(du -h "$OUT" | cut -f1) at $OUT"
   || { echo "[ffmpeg] prores_ks encoder missing from the build" >&2; exit 1; }
 "$OUT" -hide_banner -muxers 2>/dev/null | grep -q ' mov' \
   || { echo "[ffmpeg] mov muxer missing from the build" >&2; exit 1; }
+# The review copy (H.264 .mp4 with burned-in captions) uses VideoToolbox rather
+# than libx264, which is GPL and would change the licence of the shipped app.
+"$OUT" -hide_banner -encoders 2>/dev/null | grep -q h264_videotoolbox \
+  || { echo "[ffmpeg] h264_videotoolbox encoder missing from the build" >&2; exit 1; }
+"$OUT" -hide_banner -filters 2>/dev/null | grep -q ' overlay ' \
+  || { echo "[ffmpeg] overlay filter missing from the build" >&2; exit 1; }

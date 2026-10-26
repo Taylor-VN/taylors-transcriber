@@ -1,12 +1,51 @@
 /**
  * Subtitle Manager
- * Handles subtitles data store, 25 FPS timecode utilities, SRT/VTT parsing and export
+ * Handles subtitles data store, frame-rate / drop-frame timecode utilities, SRT/VTT parsing and export
  */
 
+/**
+ * Every frame rate a project can run at. `num`/`den` is the true rate (what
+ * ffmpeg wants, e.g. 24000/1001); `timebase` is the whole-number rate that
+ * timecode counts in and that Premiere's <timebase> carries, with `ntsc` marking
+ * the 1000/1001 pull-down. Caption times are stored in seconds, so changing the
+ * rate never rewrites them.
+ */
+const FRAME_RATES = [
+  { id: '23.976', label: '23.976',     num: 24000, den: 1001, timebase: 24, ntsc: true,  drop: false },
+  { id: '24',     label: '24',         num: 24,    den: 1,    timebase: 24, ntsc: false, drop: false },
+  { id: '25',     label: '25',         num: 25,    den: 1,    timebase: 25, ntsc: false, drop: false },
+  { id: '29.97',  label: '29.97 NDF',  num: 30000, den: 1001, timebase: 30, ntsc: true,  drop: false },
+  { id: '29.97df', label: '29.97 DF',  num: 30000, den: 1001, timebase: 30, ntsc: true,  drop: true },
+  { id: '30',     label: '30',         num: 30,    den: 1,    timebase: 30, ntsc: false, drop: false },
+  { id: '50',     label: '50',         num: 50,    den: 1,    timebase: 50, ntsc: false, drop: false },
+  { id: '59.94',  label: '59.94 NDF',  num: 60000, den: 1001, timebase: 60, ntsc: true,  drop: false },
+  { id: '59.94df', label: '59.94 DF',  num: 60000, den: 1001, timebase: 60, ntsc: true,  drop: true },
+  { id: '60',     label: '60',         num: 60,    den: 1,    timebase: 60, ntsc: false, drop: false }
+];
+const DEFAULT_FRAME_RATE_ID = '25';
+
+function getFrameRate(id) {
+  return FRAME_RATES.find(r => r.id === String(id)) || FRAME_RATES.find(r => r.id === DEFAULT_FRAME_RATE_ID);
+}
+
+/** Closest supported non-drop rate to a measured fps, or null if nothing is near. */
+function nearestFrameRate(fps) {
+  let best = null;
+  FRAME_RATES.forEach(r => {
+    if (r.drop) return;
+    const d = Math.abs(r.num / r.den - fps);
+    if (d < 0.05 && (!best || d < best.d)) best = { rate: r, d };
+  });
+  return best ? best.rate : null;
+}
+
 class SubtitleManager {
-  constructor(fps = 25) {
-    this.fps = fps;
+  /** @param {number|string} rateId  an id from FRAME_RATES (a bare number such as 25 works too) */
+  constructor(rateId = DEFAULT_FRAME_RATE_ID) {
     this.subtitles = [];
+    this.startTimecode = '00:00:00:00';
+    this.startFrames = 0;
+    this.setFrameRate(rateId);
     this.selectedId = null;
     this.listeners = [];
   }
@@ -19,44 +58,137 @@ class SubtitleManager {
     this.listeners.forEach(cb => cb(this.subtitles, this.selectedId));
   }
 
-  // --- Timecode Helpers (25 FPS Default) ---
-  secondsToTimecode(seconds, fps = this.fps) {
-    if (isNaN(seconds) || seconds < 0) seconds = 0;
-    const totalFrames = Math.floor(seconds * fps);
-    const frames = totalFrames % fps;
-    const totalSeconds = Math.floor(totalFrames / fps);
+  // --- Frame rate & start timecode ---
+  /**
+   * Switches the project rate. Other modules read `fps` (the true rate, e.g.
+   * 30000/1001), `timebase` (what timecode counts in), `dropFrame` and
+   * `startOffsetSec` straight off this object, so they stay live.
+   */
+  setFrameRate(rateId) {
+    const rate = typeof rateId === 'object' && rateId ? rateId : getFrameRate(rateId);
+    this.rate = rate;
+    this.rateId = rate.id;
+    this.fps = rate.num / rate.den;
+    this.timebase = rate.timebase;
+    this.dropFrame = rate.drop;
+    this.setStartTimecode(this.startTimecode);
+  }
+
+  /**
+   * The timecode the first frame of the sequence carries (01:00:00:00 and
+   * 10:00:00:00 are the usual ones). Held as text and re-read on a rate change
+   * so a drop-frame start still lands on a valid label.
+   */
+  setStartTimecode(tc) {
+    const frames = this.timecodeToFrames(tc);
+    this.startFrames = frames === null ? 0 : frames;
+    this.startTimecode = this.framesToTimecode(this.startFrames);
+    this.startOffsetSec = this.startFrames / this.fps;
+  }
+
+  /** Whole-frame index of a time, nudged so 1.2s at 25fps is frame 30, not 29. */
+  secondsToFrames(seconds) {
+    return Math.floor(seconds * this.fps + 1e-6);
+  }
+
+  /** Frame count -> "HH:MM:SS:FF" ("HH:MM:SS;FF" when drop-frame). */
+  framesToTimecode(frameCount) {
+    const tb = this.timebase;
+    let n = Math.max(0, Math.floor(frameCount));
+    if (this.dropFrame) {
+      // Drop-frame skips labels, not frames: 2 (or 4 at 59.94) at the start of
+      // every minute that is not a tenth minute, which keeps the label within
+      // a frame or so of the wall clock.
+      const drop = tb === 60 ? 4 : 2;
+      const perMin = tb * 60 - drop;
+      const per10 = tb * 600 - drop * 9;
+      const tens = Math.floor(n / per10);
+      const rem = n % per10;
+      n += drop * 9 * tens + (rem > drop ? drop * Math.floor((rem - drop) / perMin) : 0);
+    }
+    const frames = n % tb;
+    const totalSeconds = Math.floor(n / tb);
     const secs = totalSeconds % 60;
     const totalMinutes = Math.floor(totalSeconds / 60);
     const mins = totalMinutes % 60;
     const hrs = Math.floor(totalMinutes / 60);
 
-    const pad = (n) => n.toString().padStart(2, '0');
-    return `${pad(hrs)}:${pad(mins)}:${pad(secs)}:${pad(frames)}`;
+    const pad = (v) => v.toString().padStart(2, '0');
+    return `${pad(hrs)}:${pad(mins)}:${pad(secs)}${this.dropFrame ? ';' : ':'}${pad(frames)}`;
   }
 
-  timecodeToSeconds(tc, fps = this.fps) {
+  /** "HH:MM:SS:FF" (or ';' before FF) -> frame count, or null if it is not that shape. */
+  timecodeToFrames(tc) {
+    const m = String(tc || '').trim().match(/^(\d+):(\d+):(\d+)[:;](\d+)$/);
+    if (!m) return null;
+    const [h, mi, s, f] = m.slice(1).map(Number);
+    const tb = this.timebase;
+    let n = (h * 3600 + mi * 60 + s) * tb + f;
+    if (this.dropFrame) {
+      const drop = tb === 60 ? 4 : 2;
+      const totalMinutes = h * 60 + mi;
+      n -= drop * (totalMinutes - Math.floor(totalMinutes / 10));
+    }
+    return Math.max(0, n);
+  }
+
+  // --- Timecode Helpers ---
+  /**
+   * Seconds -> display timecode. The start timecode is added unless
+   * `useOffset` is false (SRT/VTT-style zero-based output wants that).
+   */
+  secondsToTimecode(seconds, fps = this.fps, useOffset = true) {
+    if (isNaN(seconds) || seconds < 0) seconds = 0;
+    // A caller-supplied rate other than ours is rare (nothing in-tree does it);
+    // honour it by temporarily doing the plain non-drop count.
+    let frameCount;
+    if (Math.abs(fps - this.fps) < 1e-9) {
+      frameCount = this.secondsToFrames(seconds) + (useOffset ? this.startFrames : 0);
+      return this.framesToTimecode(frameCount);
+    }
+    const saved = { fps: this.fps, timebase: this.timebase, dropFrame: this.dropFrame };
+    this.fps = fps;
+    this.timebase = Math.round(fps);
+    this.dropFrame = false;
+    try {
+      return this.framesToTimecode(this.secondsToFrames(seconds));
+    } finally {
+      Object.assign(this, saved);
+    }
+  }
+
+  /**
+   * Parses HH:MM:SS:FF (frames, drop-frame aware), HH:MM:SS.mmm or MM:SS.mmm.
+   * `useOffset` subtracts the start timecode, for text the user typed against
+   * the displayed timecode; file parsers (SRT/VTT) leave it off.
+   */
+  timecodeToSeconds(tc, fps = this.fps, useOffset = false) {
     if (!tc) return 0;
-    // Format HH:MM:SS:FF or HH:MM:SS,mmm or MM:SS.mmm
-    const cleanTc = tc.trim().replace(',', '.');
-    const parts = cleanTc.split(':');
-    
+    const cleanTc = String(tc).trim().replace(',', '.');
+    const offset = useOffset ? this.startOffsetSec : 0;
+    const parts = cleanTc.replace(';', ':').split(':');
+
     if (parts.length === 4) {
+      if (Math.abs(fps - this.fps) < 1e-9) {
+        const frames = this.timecodeToFrames(cleanTc);
+        if (frames !== null) return Math.max(0, (frames - (useOffset ? this.startFrames : 0)) / this.fps);
+      }
       const hrs = parseFloat(parts[0]) || 0;
       const mins = parseFloat(parts[1]) || 0;
       const secs = parseFloat(parts[2]) || 0;
       const frames = parseFloat(parts[3]) || 0;
-      return hrs * 3600 + mins * 60 + secs + (frames / fps);
+      return Math.max(0, hrs * 3600 + mins * 60 + secs + (frames / fps) - offset);
     } else if (parts.length === 3) {
       const hrs = parseFloat(parts[0]) || 0;
       const mins = parseFloat(parts[1]) || 0;
       const secs = parseFloat(parts[2]) || 0;
-      return hrs * 3600 + mins * 60 + secs;
+      return Math.max(0, hrs * 3600 + mins * 60 + secs - offset);
     } else if (parts.length === 2) {
       const mins = parseFloat(parts[0]) || 0;
       const secs = parseFloat(parts[1]) || 0;
-      return mins * 60 + secs;
+      return Math.max(0, mins * 60 + secs - offset);
     }
-    return parseFloat(cleanTc) || 0;
+    return Math.max(0, (parseFloat(cleanTc) || 0) - offset);
   }
 
   // --- Subtitle CRUD ---
@@ -234,6 +366,8 @@ class SubtitleManager {
    * imports as an empty sequence.
    */
   exportPremiereXml(project = { width: 1920, height: 1080 }) {
+    // Frame counts below are in true-rate frames; the <rate> element carries
+    // the whole-number timebase plus the NTSC flag for 1000/1001 rates.
     const fps = this.fps;
     const esc = (s) => String(s || '')
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -244,7 +378,14 @@ class SubtitleManager {
       : 0;
     const sequenceDuration = Math.max(1, Math.ceil(lastEnd * fps));
 
-    const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
+    const rate = `<rate><timebase>${this.timebase}</timebase><ntsc>${this.rate.ntsc ? 'TRUE' : 'FALSE'}</ntsc></rate>`;
+    // Where the sequence's first frame sits on the timecode clock.
+    const seqTimecode = `<timecode>
+      ${rate}
+      <string>${this.startTimecode}</string>
+      <frame>${this.startFrames}</frame>
+      <displayformat>${this.dropFrame ? 'DF' : 'NDF'}</displayformat>
+    </timecode>`;
 
     const clipNodes = this.subtitles.map((sub, i) => {
       const inFrame = Math.round(sub.start * fps);
@@ -267,9 +408,10 @@ class SubtitleManager {
 <!DOCTYPE xmeml>
 <xmeml version="4">
   <sequence id="subtitler-sequence">
-    <name>Subtitled Sequence (${fps} FPS)</name>
+    <name>Subtitled Sequence (${this.rate.label} FPS)</name>
     <duration>${sequenceDuration}</duration>
     ${rate}
+    ${seqTimecode}
     <media>
       <video>
         <format>
