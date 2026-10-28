@@ -198,6 +198,36 @@ svg[viewBox]:not(.icon):not(.brand-icon) {
   white-space: nowrap;
 }
 
+/* Frame rate + start timecode, where the fixed "25 FPS" badge used to be. */
+.timing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  color: var(--text-dim);
+}
+.timing-pill select,
+.timing-pill input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: inherit;
+  height: 20px;
+  padding: 0 var(--s1);
+}
+.timing-pill select { cursor: pointer; }
+.timing-pill input { width: 86px; text-align: center; }
+.timing-pill select:hover, .timing-pill input:hover { border-color: var(--border-strong); }
+.timing-pill select:focus, .timing-pill input:focus { outline: none; border-color: var(--accent); color: var(--text); }
+.timing-start { display: inline-flex; align-items: center; gap: var(--s1); }
+.timing-pill input.invalid { border-color: var(--danger); }
+@media (max-width: 1180px) {
+  .timing-start span { display: none; }
+}
+
 .header-controls {
   display: flex;
   align-items: center;
@@ -314,6 +344,7 @@ svg[viewBox]:not(.icon):not(.brand-icon) {
 }
 .btn-icon:hover { background: var(--bg-hover); color: var(--text); }
 .btn-icon .icon { width: 14px; height: 14px; }
+.btn-icon:disabled { opacity: 0.35; cursor: default; background: none; color: inherit; }
 .btn-icon-danger:hover { background: rgba(229, 84, 75, 0.14); color: var(--danger); }
 
 .btn-xs {
@@ -513,6 +544,15 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   border-radius: 3px;
   padding: 0 4px;
 }
+
+.menu-heading {
+  padding: var(--s2) var(--s3) var(--s1);
+  font-size: var(--fs-micro);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.menu-item-quiet .menu-item-label { color: var(--text-muted); }
 
 .menu-sep {
   height: 1px;
@@ -1837,6 +1877,16 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 
 .export-row .input-select { flex: 1; }
 
+.export-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.export-folder-path.unset { color: var(--text-dim); }
+.export-folder-path.missing { color: var(--warn); }
+
 .export-note {
   margin-top: var(--s4);
   padding: var(--s3) var(--s4);
@@ -2168,9 +2218,80 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   cursor: help;
 }
 
-#btnReviewFilter { flex-shrink: 0; }
-#btnReviewFilter.active {
+#btnReviewFilter,
+#btnIssueFilter,
+#btnFindReplace { flex-shrink: 0; }
+#btnReviewFilter.active,
+#btnIssueFilter.active {
   background: rgba(224, 160, 50, 0.16);
   border-color: var(--warn);
   color: var(--warn);
 }
+.search-filter-bar { flex-wrap: wrap; }
+.search-filter-bar .input-search { flex: 1 1 90px; min-width: 0; width: auto; }
+
+/* Find & replace row, opened from the search bar */
+.replace-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+.replace-row { display: flex; align-items: center; gap: var(--s3); }
+.replace-row .input-search { flex: 1 1 auto; min-width: 0; }
+.replace-options { gap: var(--s4); flex-wrap: wrap; }
+.replace-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* Reading speed and delivery-rule flags: quiet until something is over. */
+.caption-cps {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  cursor: help;
+}
+.caption-cps::after { content: ' cps'; }
+.caption-cps.over { color: var(--danger); font-weight: 600; }
+
+.caption-notes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+}
+.caption-notes:empty { display: none; }
+.caption-notes { margin-top: var(--s1); }
+.caption-flag {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--danger);
+  border: 1px solid rgba(229, 84, 75, 0.4);
+  border-radius: 3px;
+  padding: 0 4px;
+  cursor: help;
+}
+.caption-unsure-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-left: var(--s1);
+}
+.caption-unsure-word {
+  font-size: var(--fs-sm);
+  color: var(--warn);
+  background: rgba(224, 160, 50, 0.1);
+  border: 1px solid rgba(224, 160, 50, 0.3);
+  border-radius: 3px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.caption-unsure-word:hover { background: rgba(224, 160, 50, 0.2); }

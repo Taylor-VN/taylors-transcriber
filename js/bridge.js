@@ -127,7 +127,7 @@
     // page — and projects opened through a file input — rather than written or
     // read server-side at a guessed path. Leaving them absent makes app.js take
     // its download / file-input path.
-    const NATIVE_ONLY = new Set(['save_text_file', 'project_save', 'project_open']);
+    const NATIVE_ONLY = new Set(['save_text_file', 'save_binary_file', 'project_save', 'project_open']);
 
     const api = makeHttpApi(cfg.token);
     window.pywebview = window.pywebview || {};

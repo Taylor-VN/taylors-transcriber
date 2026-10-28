@@ -522,6 +522,11 @@ class Transcriber:
                 raise RuntimeError(
                     f'{model_desc["label"]} is an English-only model, but "{lang}" was requested. '
                     'Choose a multilingual model, or set the language to English.')
+            langs = model_desc.get('languages')
+            if isinstance(langs, list) and lang not in (None, '', 'auto') and lang not in langs:
+                raise RuntimeError(
+                    f'{model_desc["label"]} does not cover "{lang}". '
+                    'Choose a model that supports it, such as Qwen3-ASR or Whisper.')
 
             def report(frac, message):
                 if job.cancelled:

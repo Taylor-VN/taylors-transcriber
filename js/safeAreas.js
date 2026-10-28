@@ -93,20 +93,21 @@ const SAFE_AREA_SETS = {
     id: 'youtube_shorts',
     label: '9:16 YouTube Shorts',
     ratios: ['9x16'],
-    // Google ships a reference image for Shorts, not a table of numbers, so
-    // there is nothing to quote. These are measured off the mobile player,
-    // which is the one that matters — the desktop layout parks the action rail
-    // beside the video instead of on top of it. The bottom figure assumes the
-    // description is collapsed; expanding it takes another ~100 px.
-    safe: vertical(130, 180, 480, 60),
+    // Google's safe-zone image for vertical video ads on YouTube, which run in
+    // the Shorts feed: 288 px top, 672 px bottom, 48 px left, 192 px right on
+    // 1080x1920. The right margin is the width of the button column, so the
+    // box already clears it. Organic Shorts carry less at the bottom than an
+    // ad does, so this errs on the safe side.
+    safe: vertical(288, 192, 672, 48),
     avoid: [
-      { top: 0.75, left: 0, right: 0, bottom: 0, label: 'Title, channel, CTA' },
-      { top: 0.42, left: 0.83, right: 0, bottom: 0.25, label: 'Like / comment / share rail' }
+      { top: 0, left: 0, right: 0, bottom: 1 - 288 / V_H, label: 'Search, menu' },
+      { top: 1 - 672 / V_H, left: 0, right: 0, bottom: 0, label: 'Channel, Subscribe, title, progress bar' },
+      { top: 0.42, left: 1 - 192 / V_W, right: 0, bottom: 672 / V_H, label: 'Like / dislike / comment / share / remix' }
     ],
-    source: 'practical',
-    note: 'Measured from the mobile Shorts player: the title and channel block along the '
-        + 'bottom and the action rail down the right. Google publishes a reference image '
-        + 'rather than figures, so re-check this one before a delivery.'
+    source: 'spec',
+    note: 'Google\'s vertical-video safe zone for YouTube: 288 px top, 672 px bottom, 48 px left '
+        + 'and 192 px right on 1080x1920. Published for ads, which run in Shorts; organic '
+        + 'Shorts cover a little less at the bottom.'
   },
 
   instagram_reels: {
@@ -115,17 +116,20 @@ const SAFE_AREA_SETS = {
     ratios: ['9x16'],
     // Meta publishes this as percentages, not pixels, so it holds at any
     // vertical resolution: 14% of the height clear at the top, 35% at the
-    // bottom, 6% of the width down each side. The bottom figure is large
-    // because it covers the call-to-action button as well as the caption.
+    // bottom, 6% of the width down each side. The bottom is not a flat band:
+    // the action rail covers the rightmost 21% of the frame over the bottom
+    // 40%, so it pokes 5% above the box's bottom edge on the right.
     safe: { top: 0.14, right: 0.06, bottom: 0.35, left: 0.06 },
     avoid: [
-      { top: 0.78, left: 0, right: 0, bottom: 0, label: 'Username, caption, audio' },
-      { top: 0.42, left: 0.83, right: 0, bottom: 0.22, label: 'Action rail' }
+      { top: 0, left: 0, right: 0, bottom: 0.86, label: 'Reels header, camera' },
+      { top: 0.65, left: 0, right: 0, bottom: 0, label: 'Username, caption, audio' },
+      { top: 0.60, left: 0.79, right: 0, bottom: 0.35, label: 'Like / comment / share / save rail' }
     ],
     source: 'spec',
     note: 'Meta\'s published Reels safe zone: 14% clear at the top, 35% at the bottom, 6% '
-        + 'each side. The rail on the right is the organic interface, which that 6% does '
-        + 'not cover — keep clear of the hatching too.'
+        + 'each side, with the action rail over the rightmost 21% of the bottom 40%. A '
+        + 'caption sitting right on the bottom edge of the box clips the rail — keep '
+        + 'clear of the hatching too.'
   },
 
   instagram_stories: {
@@ -150,17 +154,21 @@ const SAFE_AREA_SETS = {
     id: 'tiktok',
     label: '9:16 TikTok',
     ratios: ['9x16'],
-    // TikTok ships safe-zone template files rather than a table of numbers;
-    // these are the in-feed template's margins on 1080x1920, and they widen
-    // with a longer caption, so treat them as the short-caption case.
-    safe: vertical(130, 140, 484, 44),
+    // TikTok ships a safe-zone template file with its In-Feed Ads guide rather
+    // than a table: 240 px top, 660 px bottom, 120 px each side once scaled
+    // from its 720x1280 canvas to 1080x1920. The button column is 180 px wide
+    // from 840 px down — wider than the 120 px margin, and level with where a
+    // bottom caption sits — so the box's right edge is moved in to clear it.
+    safe: vertical(240, 180, 660, 120),
     avoid: [
-      { top: 0.75, left: 0, right: 0, bottom: 0, label: 'Handle, caption, music' },
-      { top: 0.36, left: 0.85, right: 0, bottom: 0.25, label: 'Action rail' }
+      { top: 0, left: 0, right: 0, bottom: 1 - 240 / V_H, label: 'Following / For You, search' },
+      { top: 1 - 660 / V_H, left: 0, right: 0, bottom: 0, label: 'Handle, caption, music' },
+      { top: 840 / V_H, left: 1 - 180 / V_W, right: 0, bottom: 660 / V_H, label: 'Action rail' }
     ],
     source: 'spec',
-    note: 'TikTok\'s in-feed safe-zone template: 130 px top, 484 px bottom, 44 px left '
-        + 'and 140 px right on 1080x1920. A long caption pushes the bottom figure up.'
+    note: 'TikTok\'s in-feed safe-zone template: 240 px top, 660 px bottom and 120 px each side '
+        + 'on 1080x1920, with the right edge pulled in to 180 px to clear the button column. '
+        + 'A long post caption pushes the bottom higher still.'
   }
 };
 

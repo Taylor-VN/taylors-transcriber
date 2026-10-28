@@ -162,9 +162,31 @@ MODELS = {
         word_timings=True,
         needs_alignment=False,
         tier='accuracy',
+        wer=6.05,
         notes=('Very strong on English and by far the fastest of the accurate '
                'options on Apple Silicon — it runs on the GPU through MLX and '
                'reports its own token timings. English only.'),
+    ),
+    'parakeet-tdt-0.6b-v3': _m(
+        id='parakeet-tdt-0.6b-v3',
+        repo='mlx-community/parakeet-tdt-0.6b-v3',
+        label='NVIDIA Parakeet TDT 0.6B v3',
+        engine=ENGINE_MLX_PARAKEET,
+        platforms=['darwin-arm64'],
+        size_gb=1.3,
+        # The 25 European languages it was trained on. It detects which one it
+        # is hearing by itself and takes no language argument, so a language
+        # outside this list is refused up front rather than transliterated.
+        languages=['bg', 'hr', 'cs', 'da', 'nl', 'en', 'et', 'fi', 'fr', 'de',
+                   'el', 'hu', 'it', 'lv', 'lt', 'mt', 'pl', 'pt', 'ro', 'sk',
+                   'sl', 'es', 'sv', 'ru', 'uk'],
+        word_timings=True,
+        needs_alignment=False,
+        tier='accuracy',
+        wer=6.34,
+        notes=('Parakeet v2\'s multilingual successor: 25 European languages with '
+               'its own word timings, at the same speed on the Apple GPU. A '
+               'fraction behind v2 on English alone.'),
     ),
 
     # ------------------------------------------------------------ whisper family

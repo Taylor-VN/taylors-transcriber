@@ -178,7 +178,8 @@ the first.
 
 **Project → Save Project** (`Ctrl/⌘ S`) writes every film in the job to a single
 `.ttproj` file. Save As (`Ctrl/⌘ ⇧ S`) writes a new one; a plain Save after that
-overwrites it silently. `Ctrl/⌘ O` opens one, and a `.ttproj` dropped on the
+overwrites it silently. `Ctrl/⌘ O` opens one; the Project menu's **Open Recent** lists the last eight
+(most recent first, full path on hover; **Clear Recent** empties it). A `.ttproj` dropped on the
 program monitor opens too.
 
 The file is plain JSON and holds every ratio's captions, style and guide choice
@@ -220,7 +221,9 @@ Everything is drawn at the project resolution and the preview is a scaled copy
 of it, so the Program Monitor is pixel-for-pixel what gets exported. Preset
 style values (font size, margins, stroke, shadow) are referenced to a
 1080-pixel-tall frame and scaled, so a style looks proportionally the same in
-every ratio before you tune it for one.
+every ratio before you tune it for one. **Line Width** is the exception: it is a
+share of the frame's width — how far towards the edges a line may run before it
+wraps — so a narrow 9:16 can be given more room than a 16:9 needs.
 
 ### Exporting every ratio at once
 
@@ -233,6 +236,13 @@ transparency.
 ![The ProRes 4444 + Alpha export dialog with all four aspect ratios ticked](docs/screenshots/export-prores-alpha.jpg)
 
 *One run, four files. The dialog counts the frames it is about to render and says which backend will write them.*
+
+**Save to** sets an export folder. Once one is chosen, renders are written
+straight into it with no save dialog, replacing any file of the same name, and
+the folder is remembered between launches. If it has gone missing — an
+unplugged drive — the dialog comes back for that render. **Ask each time**
+returns to choosing per file. SRT, VTT and Premiere XML exports use the folder
+too; style presets (`.prfpset`) still ask.
 
 Each ratio is rendered by genuinely switching the editor to it, so every file
 in the set is drawn by the same code that drew the preview you approved. The
@@ -260,22 +270,23 @@ covered, not merely tight.
 | Generic 5% / 10% | any | the old 4:3-era convention, kept as a neutral default |
 | EBU R95 | 16:9 | 5% graphics safe area, with the 3.5% action safe area outside it |
 | YouTube | 16:9 | clear of the progress bar and the cards/share affordances |
-| YouTube Shorts | 9:16 | title and channel block, action rail |
-| Instagram Reels | 9:16 | 14% top, 35% bottom, 6% each side |
+| YouTube Shorts | 9:16 | 288 top, 672 bottom, 48 left, 192 right on 1080 × 1920 |
+| Instagram Reels | 9:16 | 14% top, 35% bottom, 6% each side; rail over the right 21% of the bottom 40% |
 | Instagram Stories | 9:16 | 14% top, 35% bottom, 6% each side |
-| TikTok | 9:16 | 130 top, 484 bottom, 44 left, 140 right on 1080 × 1920 |
+| TikTok | 9:16 | 240 top, 660 bottom, 120 left, 180 right on 1080 × 1920 |
 
-EBU R95, both Instagram sets and TikTok come from published specs. The three
-marked with an asterisk in the dropdown — Generic and both YouTube sets — are
-measured instead, because Google publishes a reference image rather than
-figures. Apps redesign; re-check those before trusting them on a delivery.
+Everything except Generic and the 16:9 YouTube set comes from a published
+spec; those two are marked with an asterisk in the dropdown. Apps redesign;
+re-check before trusting any of them on a delivery.
 
-Two caveats worth knowing. Meta quotes one safe zone for Stories and Reels
-alike, and it is the *ads* figure, so the 35% at the bottom is reserving room
-for a call-to-action button you may not have — the sets stay separate because
-the hatched interface zones above and below still differ. And the published 6%
-at the sides does not clear the organic action rail, which is why the hatching
-on the right crosses the box; keep clear of both.
+Caveats worth knowing. The vertical figures are all the platforms' *ads*
+guidance — none of them publishes one for organic posts — so the bottom bands
+reserve room for a call-to-action button you may not have. TikTok's own
+template has a 120 px right margin, but its button column is 180 px wide from
+840 px down, level with a bottom caption, so the box's right edge is pulled in
+to clear it. Reels keeps Meta's 6% because its rail only rises 5% above the
+bottom of the box — a caption sitting right on the box's bottom edge still
+clips it, so keep clear of the hatching too.
 
 All of them live in one table at the top of `js/safeAreas.js`, so correcting a
 number is a one-line change.
@@ -328,6 +339,7 @@ runtimes that exist for your platform.
 | IBM Granite Speech 4.1 2B | Lowest reported English WER of those listed | needs aligner | all |
 | Cohere Transcribe 2B | Apache 2.0; topped Open ASR for English, strong across 13 more languages | needs aligner | all |
 | NVIDIA Parakeet TDT 0.6B v2 | Very strong English, by far the fastest accurate option on Apple Silicon | own timings | Apple Silicon |
+| NVIDIA Parakeet TDT 0.6B v3 | v2's speed across 25 European languages, detected automatically | own timings | Apple Silicon |
 | Whisper large-v3 / turbo / medium / small / tiny | 99 languages, solid baseline; turbo is ~8× faster | own timings | all |
 
 The Whisper family ships in two weight formats, so it runs everywhere: MLX on
@@ -382,6 +394,23 @@ one in the captions list renames that person on **every** line at once. Tick
 **Speaker names** in the Export menu to carry them into SubRip (`Name: text`)
 and WebVTT (`<v Name>` voice spans).
 
+### Finding, replacing and checking captions
+
+The captions list has **find and replace**: the search box is the "find" field,
+**Replace** opens a replace row with *Match case* and *Whole word* toggles.
+**Replace** swaps the next match and moves on; **Replace all** does every match
+and reports the count. Tick **All ratios** to apply it to the film's other
+aspect ratios too. (The transcription vocabulary is a term list, not
+from→to pairs, so it is not applied to existing captions.)
+
+Each caption shows its reading speed (characters per second) in grey, red when
+over the limit, and small red flags when a line is too long, there are too many
+lines, or it is on screen for less than the minimum. The limits are the
+segmentation controls (chars per line, max lines) plus 20 cps and 1 s. **Issues**
+in the search bar filters to captions with a flag. Caption boxes use the
+system spellchecker, and words the model was unsure about are listed as chips
+under the caption — click one to select it in the text.
+
 Install it from **Settings → Speaker Separation** plus the SpeechBrain runtime.
 Overlapping speech is the known limit: when two people talk over each other, one
 of them wins the span. pyannote's diarisation pipelines handle that better and
@@ -428,11 +457,33 @@ engines transcribe what they are given and have no such gate to stand down.
 | Format | Notes |
 | --- | --- |
 | ProRes 4444 / 4444 XQ | QuickTime `.mov`, `yuva444p10le`, 16-bit alpha |
+| Review copy | H.264 `.mp4` (AAC audio) of the loaded footage with captions burned in, for client sign-off. Footage is letterboxed to the chosen ratio; full or caption-span range; full or half size. Desktop app only: you locate the footage file once through a native dialog (webviews give no file path). Encodes with libx264 when ffmpeg has it, otherwise VideoToolbox (the bundled LGPL build) |
 | PNG sequence | Fallback when ffmpeg is absent; transparent RGBA frames + the ffmpeg command |
 | SRT / VTT | Standard subtitle interchange; optionally with speaker names |
+| TTML / DFXP | IMSC1 text profile, SMPTE timecode at the project rate (drop-frame aware, start timecode included). Imports clock-time, frame and tick timings, `<br/>` and spans |
+| SCC | CEA-608 pop-on at 29.97 DF, 32 columns, up to 4 rows at the bottom of the frame; lines over 32 characters are re-wrapped (a toast says so). Imports pop-on SCC |
+| EBU-STL | Tech 3264 binary (`STL25.01` / `STL30.01`, code page 850, Latin table), start timecode in the GSI. Imports the same. All three are also in the Import menu |
 | Premiere sequence XML | FCP7 `xmeml` v4 |
 | Style preset | `.prfpset`, round-trips back through the importer |
 | Project | `.ttproj` — every film in the job, media excluded |
+
+### Frame rate and start timecode
+
+The frame rate is a project setting (header, next to the title) rather than a
+fixed 25 fps: 23.976, 24, 25, 29.97 (drop-frame or non-drop), 30, 50, 59.94
+(drop-frame or non-drop) and 60. It is saved in the `.ttproj`; projects from
+before the setting opened at 25. Drop-frame timecode is shown with a `;` before
+the frames. Captions are stored in seconds, so changing the rate never moves
+them; it changes how they are labelled and snapped, the render's frame count,
+the ProRes frame rate (fractional rates go to ffmpeg as `24000/1001`) and the
+Premiere XML `timebase` / `ntsc` flag. When you load footage the app measures
+its frame rate and offers to switch the project if it differs.
+
+The **Start** timecode (default `00:00:00:00`; `01:00:00:00` and `10:00:00:00`
+are the usual ones) is added to the caption list, transport and ruler, is
+subtracted from timecodes you type, is written into the Premiere XML sequence,
+and is stamped on the ProRes `.mov` with `-timecode`. SRT and VTT stay
+zero-based.
 
 ## Premiere presets
 
@@ -514,8 +565,11 @@ readout. Green, amber and red appear only as status, never as button fills.
 | `1`–`4` | Edit this film's 16:9 / 1:1 / 4:5 / 9:16 captions |
 | `+` / `-` | Zoom timeline |
 | `[` / `]` | Previous / next film in the project |
+| `Ctrl/⌘ Z` | Undo (`⇧` or `Ctrl Y` to redo) — captions and styles, across every film and ratio |
 | `Ctrl/⌘ S` | Save project (`⇧` for Save As) |
 | `Ctrl/⌘ O` | Open project |
+| `Ctrl/⌘ F` | Search captions |
+| `Ctrl/⌘ Alt F` | Find and replace in captions |
 | `?` | Shortcuts |
 
 ## Project layout

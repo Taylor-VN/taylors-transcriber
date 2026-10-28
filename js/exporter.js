@@ -161,10 +161,35 @@ class AlphaExporter {
         if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
       }
 
+      if (native && opts.review) {
+        // Review copy: the frames above are only the caption layer; ffmpeg lays
+        // them over the source footage. The offset is the frame-aligned start,
+        // not startSec, so captions stay locked to the picture they were timed on.
+        if (opts.onProgress) opts.onProgress(totalFrames, totalFrames, 'Compositing H.264 review copy (this can take a while)');
+        const res = await window.pywebview.api.encode_review(jobId, {
+          fps: fps,
+          width: project.width,
+          height: project.height,
+          scale: opts.review.scale || 1,
+          source_path: opts.review.sourcePath,
+          start: startFrame / fps,
+          duration: totalFrames / fps,
+          filename: opts.filename || 'review_copy.mp4'
+        });
+        if (!res || !res.ok) throw new Error((res && res.error) || 'ffmpeg encoding failed.');
+        return { mode: 'review', path: res.path, frames: framesWritten, encoder: res.encoder };
+      }
+
       if (native) {
         if (opts.onProgress) opts.onProgress(totalFrames, totalFrames, 'Encoding ProRes 4444 (this can take a moment)');
+        // Fractional rates go to ffmpeg as a ratio (24000/1001), never a rounded
+        // decimal, and the .mov is stamped with the timecode of its first frame:
+        // the project start plus however far into the timeline the render began.
+        const sm = this.subManager;
         const res = await window.pywebview.api.encode_prores(jobId, {
           fps: fps,
+          fps_ratio: `${sm.rate.num}/${sm.rate.den}`,
+          timecode: sm.framesToTimecode(startFrame + sm.startFrames),
           profile: profile,
           filename: opts.filename || 'subtitles_alpha.mov'
         });
@@ -194,14 +219,14 @@ class AlphaExporter {
       '==============================================================',
       '',
       `Resolution : ${project.width}x${project.height} (${project.label})`,
-      `Frame rate : ${fps} fps`,
+      `Frame rate : ${this.subManager.rate.label} fps (${this.subManager.rate.num}/${this.subManager.rate.den})`,
       '',
       'Every PNG is fully transparent except where a caption is drawn, so the',
       'sequence drops straight onto a track above your footage in Premiere Pro.',
       '',
       `To encode it to Apple ProRes ${profileName} with a real alpha channel, run:`,
       '',
-      `  ffmpeg -framerate ${fps} -i frame_%06d.png \\`,
+      `  ffmpeg -framerate ${this.subManager.rate.num}/${this.subManager.rate.den} -i frame_%06d.png \\`,
       `         -c:v prores_ks -profile:v ${profile} -pix_fmt yuva444p10le \\`,
       '         -alpha_bits 16 -vendor apl0 subtitles_alpha.mov',
       '',

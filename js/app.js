@@ -11,6 +11,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { await window.bridgeReady; } catch (e) { /* static mode */ }
   }
 
+  // The frame rate is a project setting now (subManager.fps is the live value);
+  // every module below starts at the default and is re-pointed by
+  // applyProjectTiming() whenever the project's rate changes or one is loaded.
   const FPS = 25;
 
   // Matches LOW_CONFIDENCE in transcriber.py. Whisper-family probabilities
@@ -98,6 +101,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // notifications that repointing causes are not mistaken for edits.
   let swappingFilm = false;
 
+  // Created by bootProject() once a project is on screen; until then there is
+  // nothing to undo, so every caller checks for it.
+  let undoHistory = null;
+
   // Where the project is parked between launches. Declared up here because
   // bootProject() runs long before the project section below is reached, and a
   // `let`/`const` is unusable until its own line executes.
@@ -182,6 +189,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     project.dirty = false;
     renderProjectUI();
 
+    undoHistory = new UndoHistory({ capture: captureForUndo, restore: restoreFromUndo });
+    undoHistory.onChange(updateUndoButtons);
+    undoHistory.reset();
+
     // Web fonts arrive after first paint; repaint so the preview shows the real
     // typeface rather than the fallback.
     if (document.fonts && document.fonts.ready) {
@@ -201,6 +212,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // --- Header File Operations ---
   function bindHeaderControls() {
+    bindTimingControls();
     // Media Upload Buttons
     const mediaInput = document.getElementById('mediaFileInput');
     document.getElementById('btnTriggerLoadMedia').addEventListener('click', () => {
@@ -223,14 +235,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
+      const lowerName = file.name.toLowerCase();
+      const isBinary = lowerName.endsWith('.stl'); // EBU-STL is bytes, not text
       reader.onload = (evt) => {
         const content = evt.target.result;
         try {
           let list;
-          if (file.name.toLowerCase().endsWith('.json')) {
+          if (lowerName.endsWith('.json')) {
             const parsed = JSON.parse(content);
             list = Array.isArray(parsed) ? parsed : parsed.subtitles;
             if (!Array.isArray(list)) throw new Error('JSON must be an array of subtitles.');
+          } else if (isBinary) {
+            list = CaptionFormats.importSTL(content, captionClock());
+          } else if (/\.(ttml|dfxp|xml)$/.test(lowerName)) {
+            list = CaptionFormats.importTTML(content, captionClock());
+          } else if (lowerName.endsWith('.scc')) {
+            list = CaptionFormats.importSCC(content, captionClock());
           } else {
             list = subManager.parseSubtitleText(content); // handles both SRT and VTT
           }
@@ -249,7 +269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         timelineController.resizeAndDraw();
       };
       reader.onerror = () => toast(`Could not read "${file.name}".`, 'error');
-      reader.readAsText(file);
+      if (isBinary) reader.readAsArrayBuffer(file); else reader.readAsText(file);
       e.target.value = '';
     });
 
@@ -277,18 +297,47 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('btnExportSrt').addEventListener('click', () => {
       if (!requireCaptions()) return;
-      saveTextFile(subManager.exportSRT(withSpeakers()), exportName('.srt'), 'text/plain');
+      saveTextFile(subManager.exportSRT(withSpeakers()), exportName('.srt'), 'text/plain', true);
     });
 
     document.getElementById('btnExportVtt').addEventListener('click', () => {
       if (!requireCaptions()) return;
-      saveTextFile(subManager.exportVTT(withSpeakers()), exportName('.vtt'), 'text/vtt');
+      saveTextFile(subManager.exportVTT(withSpeakers()), exportName('.vtt'), 'text/vtt', true);
     });
+
+    // Broadcast formats. The format code is pure; it reads the live project
+    // clock from here and reports re-wrapped lines through opts.warnings.
+    const captionClock = () => ({
+      fps: subManager.fps,
+      timebase: subManager.timebase,
+      dropFrame: subManager.dropFrame,
+      startOffsetSec: subManager.startOffsetSec || 0
+    });
+    const exportBroadcast = (kind, suffix, mime) => {
+      if (!requireCaptions()) return;
+      const lang = document.getElementById('transcribeLanguage');
+      const opts = Object.assign(captionClock(), {
+        warnings: [],
+        lang: lang && lang.value && lang.value !== 'auto' ? lang.value : 'en'
+      });
+      const data = CaptionFormats[kind](subManager.getSubtitles(), opts);
+      const save = data instanceof Uint8Array
+        ? saveBinaryFile(data, exportName(suffix), mime, true)
+        : saveTextFile(data, exportName(suffix), mime, true);
+      if (opts.warnings.length) toast(opts.warnings.join(' '), 'warn', 8000);
+      return save;
+    };
+    document.getElementById('btnExportTtml').addEventListener('click',
+      () => exportBroadcast('exportTTML', '.ttml', 'application/ttml+xml'));
+    document.getElementById('btnExportScc').addEventListener('click',
+      () => exportBroadcast('exportSCC', '.scc', 'text/plain'));
+    document.getElementById('btnExportStl').addEventListener('click',
+      () => exportBroadcast('exportSTL', '.stl', 'application/octet-stream'));
 
     document.getElementById('btnExportXml').addEventListener('click', () => {
       if (!requireCaptions()) return;
       saveTextFile(subManager.exportPremiereXml(playerController.project),
-        exportName('_sequence.xml'), 'application/xml');
+        exportName('_sequence.xml'), 'application/xml', true);
     });
 
     document.getElementById('btnExportPreset').addEventListener('click', () => {
@@ -401,8 +450,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Sync Playhead Timecodes
     playerController.onTimeUpdate((curr, dur) => {
-      const tc = subManager.secondsToTimecode(curr, FPS);
-      const durTc = subManager.secondsToTimecode(dur || 0, FPS);
+      const tc = subManager.secondsToTimecode(curr);
+      // Duration is a length, not a position, so it is not shifted by the start.
+      const durTc = subManager.secondsToTimecode(dur || 0, subManager.fps, false);
 
       document.getElementById('headerTimecode').textContent = tc;
       document.getElementById('currentTimecode').textContent = tc;
@@ -596,6 +646,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // --- Left Captions Sidebar ---
+  /**
+   * Ctrl/Cmd+F lands in the search box; with `withReplace` (Ctrl/Cmd+Alt+F, or
+   * the Replace button) the replace row opens too. `toggle` closes it again.
+   */
+  function focusCaptionSearch(withReplace, toggle) {
+    const bar = document.getElementById('replaceBar');
+    const search = document.getElementById('subSearchInput');
+    if (toggle) {
+      bar.classList.add('hidden');
+    } else if (withReplace) {
+      bar.classList.remove('hidden');
+    }
+    document.getElementById('btnFindReplace').setAttribute('aria-expanded', String(!bar.classList.contains('hidden')));
+    if (toggle) return;
+    search.focus();
+    search.select();
+  }
+
   function bindCaptionsListUI() {
     const listContainer = document.getElementById('captionsList');
     const countBadge = document.getElementById('subCountBadge');
@@ -653,6 +721,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       toast(`Shifted all captions by ${offsetSec > 0 ? '+' : ''}${offsetSec}s.`, 'success');
     });
 
+    document.getElementById('btnUndo').addEventListener('click', () => undoEdit());
+    document.getElementById('btnRedo').addEventListener('click', () => redoEdit());
+
     document.getElementById('btnClearAll').addEventListener('click', () => {
       if (subManager.getSubtitles().length === 0) {
         toast('There are no captions to clear.', 'warn');
@@ -664,12 +735,207 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
 
-    searchInput.addEventListener('input', () => {
-      renderCaptionsList(subManager.getSubtitles(), subManager.selectedId);
+    const rerenderList = () => renderCaptionsList(subManager.getSubtitles(), subManager.selectedId);
+
+    let replaceCursor = null;   // where "Replace" last acted, so it moves on instead of looping
+    searchInput.addEventListener('input', () => { replaceCursor = null; rerenderList(); });
+
+    // --- find & replace ---------------------------------------------------
+    const replaceInput = document.getElementById('subReplaceInput');
+    const optCase = document.getElementById('replMatchCase');
+    const optWord = document.getElementById('replWholeWord');
+    const optRatios = document.getElementById('replAllRatios');
+
+    document.getElementById('btnFindReplace').addEventListener('click', () => {
+      const bar = document.getElementById('replaceBar');
+      if (bar.classList.contains('hidden')) focusCaptionSearch(true);
+      else focusCaptionSearch(false, true);
+    });
+    [optCase, optWord].forEach(box => box.addEventListener('change', () => {
+      replaceCursor = null;
+      rerenderList();
+    }));
+
+    /**
+     * Pattern for the search term under the current toggles, or null when empty.
+     * Whole-word is built from a captured prefix rather than a lookbehind so it
+     * also works in older webviews; `\p{L}` keeps accented words whole.
+     * Group 1 is the prefix, group 2 the match itself.
+     */
+    function buildMatcher() {
+      const term = searchInput.value.trim();
+      if (!term) return null;
+      const src = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const word = '[\\p{L}\\p{N}_]';
+      const body = optWord.checked ? `(^|[^\\p{L}\\p{N}_])(${src})(?!${word})` : `()(${src})`;
+      return new RegExp(body, optCase.checked ? 'gu' : 'giu');
+    }
+
+    /** Every match in `text` as { start, end } offsets of the match proper. */
+    function findMatches(text, re) {
+      const out = [];
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const start = m.index + m[1].length;
+        out.push({ start, end: start + m[2].length });
+        if (m[0].length === 0) re.lastIndex++;
+      }
+      return out;
+    }
+
+    function replaceAllIn(text, re, replacement) {
+      let count = 0;
+      re.lastIndex = 0;
+      const next = text.replace(re, (all, pre) => { count++; return pre + replacement; });
+      return { text: next, count };
+    }
+
+    document.getElementById('btnReplaceNext').addEventListener('click', replaceNext);
+    document.getElementById('btnReplaceAll').addEventListener('click', replaceAll);
+    replaceInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); replaceNext(); }
+    });
+
+    function replaceNext() {
+      const re = buildMatcher();
+      if (!re) { toast('Type what to find in the search box first.', 'warn'); return; }
+      const subs = subManager.getSubtitles();
+      const from = replaceCursor || {
+        index: Math.max(0, subs.findIndex(s => s.id === subManager.selectedId)), pos: 0
+      };
+      // Walk the captions once round from the cursor, so the last match wraps
+      // back to the first rather than reporting "no more matches".
+      for (let n = 0; n <= subs.length; n++) {
+        const index = (from.index + n) % subs.length;
+        const sub = subs[index];
+        if (!sub) break;
+        // First pass: only matches at/after the cursor in its own caption. The
+        // final step is that same caption again, now for the part before it.
+        const hit = findMatches(sub.text, re).find(h =>
+          n === 0 ? h.start >= from.pos : n === subs.length ? h.start < from.pos : true);
+        if (!hit) continue;
+
+        const rep = replaceInput.value;
+        subManager.updateSubtitle(sub.id, {
+          text: sub.text.slice(0, hit.start) + rep + sub.text.slice(hit.end)
+        });
+        replaceCursor = { index: subs.findIndex(s => s.id === sub.id), pos: hit.start + rep.length };
+        subManager.selectSubtitle(sub.id);
+        playerController.seek(sub.start);
+        const item = listContainer.querySelector(`.caption-item[data-id="${sub.id}"]`);
+        if (item) item.scrollIntoView({ block: 'nearest' });
+        toast('Replaced 1 match.', 'success', 1800);
+        return;
+      }
+      toast('No matches left.', 'warn', 2500);
+    }
+
+    function replaceAll() {
+      const re = buildMatcher();
+      if (!re) { toast('Type what to find in the search box first.', 'warn'); return; }
+      const rep = replaceInput.value;
+      let total = 0;
+      let captions = 0;
+
+      // The ratio on screen goes through the manager in one setSubtitles call, so
+      // every listener fires once and undo sees a single step.
+      const edited = subManager.getSubtitles().map(sub => {
+        const r = replaceAllIn(sub.text, re, rep);
+        if (!r.count) return { ...sub };
+        total += r.count;
+        captions++;
+        return { ...sub, text: r.text };
+      });
+      if (total) subManager.setSubtitles(edited);
+
+      // The other ratios live on the film, not in the manager.
+      let otherRatios = 0;
+      const film = project.getActive();
+      if (optRatios.checked && film) {
+        Object.keys(film.ratios).forEach(rid => {
+          if (rid === film.activeRatio) return;
+          let touched = false;
+          film.ratios[rid].subtitles.forEach(sub => {
+            const r = replaceAllIn(sub.text, re, rep);
+            if (!r.count) return;
+            sub.text = r.text;
+            total += r.count;
+            captions++;
+            touched = true;
+          });
+          if (touched) otherRatios++;
+        });
+        if (otherRatios) { project.markDirty(); scheduleAutosave(); }
+      }
+
+      replaceCursor = null;
+      if (!total) { toast('No matches to replace.', 'warn'); return; }
+      toast(`Replaced ${total} match${total === 1 ? '' : 'es'} in ${captions} caption${captions === 1 ? '' : 's'}`
+        + (otherRatios ? `, including ${otherRatios} other ratio${otherRatios === 1 ? '' : 's'}.` : '.'), 'success');
+    }
+
+    // --- delivery-rule checks ---------------------------------------------
+    /**
+     * What a caption breaks, judged against the segmentation controls as they
+     * stand now — so tightening "Chars / line" immediately lights up the lines
+     * that no longer fit. Lengths ignore line breaks: a break is not read.
+     */
+    function captionIssues(sub) {
+      const limits = readSegmentUI();
+      const maxCps = segmenter.settings.maxCharsPerSec;
+      const minDur = segmenter.settings.minDurationSec;
+      const lines = sub.text.split('\n').map(l => l.trim()).filter(Boolean);
+      const chars = lines.join(' ').length;
+      const dur = Math.max(0.001, sub.end - sub.start);
+      const cps = chars / dur;
+      const flags = [];
+      if (cps > maxCps) flags.push({ label: `${cps.toFixed(0)} cps`, tip: `Reads at ${cps.toFixed(1)} characters per second; the limit is ${maxCps}.` });
+      const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
+      if (longest > limits.maxCharsPerLine) flags.push({ label: `${longest} ch`, tip: `A line is ${longest} characters; the limit is ${limits.maxCharsPerLine}.` });
+      if (lines.length > limits.maxLines) flags.push({ label: `${lines.length} lines`, tip: `${lines.length} lines; the limit is ${limits.maxLines}.` });
+      if (chars > 0 && dur < minDur) flags.push({ label: `${dur.toFixed(1)}s`, tip: `On screen for ${dur.toFixed(2)}s; the minimum is ${minDur}s.` });
+      return { cps, overCps: cps > maxCps, flags };
+    }
+
+    /** The row under the text box: delivery flags, then the words the model doubted. */
+    function notesHtml(sub, issues) {
+      const unsure = (sub.uncertain && sub.uncertain.length) ? sub.uncertain : [];
+      if (!issues.flags.length && !unsure.length) return '';
+      return issues.flags.map(f =>
+          `<span class="caption-flag" title="${escapeHtml(f.tip)}">${escapeHtml(f.label)}</span>`).join('')
+        + (unsure.length ? `<span class="caption-unsure-label">Unsure</span>` : '')
+        + unsure.map(w =>
+          `<button type="button" class="caption-unsure-word" title="Select this word in the caption">${escapeHtml(w)}</button>`).join('');
+    }
+
+    // The limits are live controls; the flags must follow them.
+    ['segMaxChars', 'segMaxLines'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('input', rerenderList);
+      if (el) el.addEventListener('change', rerenderList);
     });
 
     let isRestoringFocus = false;
     let reviewOnly = false;
+    let issuesOnly = false;
+
+    const issueBtn = document.getElementById('btnIssueFilter');
+    issueBtn.addEventListener('click', () => {
+      issuesOnly = !issuesOnly;
+      issueBtn.classList.toggle('active', issuesOnly);
+      rerenderList();
+    });
+
+    function updateIssueButton(subs) {
+      const count = subs.filter(s => captionIssues(s).flags.length).length;
+      document.getElementById('issueCount').textContent = count;
+      issueBtn.classList.toggle('hidden', count === 0);
+      if (count === 0 && issuesOnly) {
+        issuesOnly = false;
+        issueBtn.classList.remove('active');
+      }
+    }
 
     const reviewBtn = document.getElementById('btnReviewFilter');
     reviewBtn.addEventListener('click', () => {
@@ -711,12 +977,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       // get back.
       updateReviewButton(subs);
 
-      const filterTerm = searchInput.value.toLowerCase().trim();
-      let filtered = subs.filter(s =>
-        s.text.toLowerCase().includes(filterTerm) ||
-        (s.speaker && s.speaker.toLowerCase().includes(filterTerm)));
+      updateIssueButton(subs);
+
+      // Same matcher as Replace, so what the list shows is what Replace all hits.
+      const matcher = buildMatcher();
+      const hasMatch = (str) => !!str && str.search(matcher) !== -1;
+      let filtered = matcher
+        ? subs.filter(s => hasMatch(s.text) || hasMatch(s.speaker))
+        : subs.slice();
 
       if (reviewOnly) filtered = filtered.filter(s => s.uncertain && s.uncertain.length);
+      if (issuesOnly) filtered = filtered.filter(s => captionIssues(s).flags.length);
 
       // The speaker field only earns its space once something has labelled the
       // captions — but the selected line always offers one, so a track can be
@@ -729,6 +1000,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       filtered.forEach((sub) => {
         const trueIndex = subs.indexOf(sub);
         const uncertain = (sub.uncertain && sub.uncertain.length) ? sub.uncertain : null;
+        const issues = captionIssues(sub);
         const itemEl = document.createElement('div');
         itemEl.className = [
           'caption-item',
@@ -737,8 +1009,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         ].filter(Boolean).join(' ');
         itemEl.dataset.id = sub.id;
 
-        const startTc = subManager.secondsToTimecode(sub.start, FPS);
-        const endTc = subManager.secondsToTimecode(sub.end, FPS);
+        const startTc = subManager.secondsToTimecode(sub.start);
+        const endTc = subManager.secondsToTimecode(sub.end);
 
         itemEl.innerHTML = `
           <div class="caption-meta">
@@ -749,11 +1021,13 @@ document.addEventListener('DOMContentLoaded', async () => {
               <input type="text" class="tc-input end-tc" value="${endTc}" title="Out Point (HH:MM:SS:FF)">
             </div>
             ${uncertain ? `<span class="caption-confidence" title="Unsure about: ${escapeHtml(uncertain.join(', '))}">?${uncertain.length}</span>` : ''}
+            <span class="caption-cps${issues.overCps ? ' over' : ''}" title="Reading speed, characters per second (limit ${segmenter.settings.maxCharsPerSec})">${issues.cps.toFixed(0)}</span>
             <button class="caption-delete-btn" title="Delete Line">✕</button>
           </div>
           ${(anySpeakers || sub.id === selectedId) ? `<input type="text" class="caption-speaker" value="${escapeHtml(sub.speaker || '')}"
              placeholder="Speaker" title="Who says this line. Renaming updates every line by this person.">` : ''}
-          <textarea class="caption-textarea" placeholder="Caption text...">${escapeHtml(sub.text)}</textarea>
+          <textarea class="caption-textarea" placeholder="Caption text..." spellcheck="true">${escapeHtml(sub.text)}</textarea>
+          <div class="caption-notes">${notesHtml(sub, issues)}</div>
         `;
 
         // Click to select & jump video
@@ -768,11 +1042,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const startInput = itemEl.querySelector('.start-tc');
         const endInput = itemEl.querySelector('.end-tc');
         startInput.addEventListener('change', () => {
-          const newStart = subManager.timecodeToSeconds(startInput.value, FPS);
+          const newStart = subManager.timecodeToSeconds(startInput.value, subManager.fps, true);
           subManager.updateSubtitle(sub.id, { start: newStart });
         });
         endInput.addEventListener('change', () => {
-          const newEnd = subManager.timecodeToSeconds(endInput.value, FPS);
+          const newEnd = subManager.timecodeToSeconds(endInput.value, subManager.fps, true);
           subManager.updateSubtitle(sub.id, { end: newEnd });
         });
 
@@ -783,6 +1057,29 @@ document.addEventListener('DOMContentLoaded', async () => {
           playerController.renderOverlay();
           const clip = subtitleTrackContent.querySelector(`.subtitle-clip[data-id="${sub.id}"] .clip-text`);
           if (clip) clip.textContent = textarea.value || '(empty)';
+
+          // Reading speed and line limits change with every keystroke. Refresh the
+          // badges in place; re-rendering the list would drop the caret.
+          const live = captionIssues(sub);
+          const cpsEl = itemEl.querySelector('.caption-cps');
+          cpsEl.textContent = live.cps.toFixed(0);
+          cpsEl.classList.toggle('over', live.overCps);
+          itemEl.querySelector('.caption-notes').innerHTML = notesHtml(sub, live);
+        });
+
+        // Low-confidence words can't be marked up inside a textarea, so they sit
+        // beneath it as chips; clicking one selects that word in the text.
+        itemEl.querySelector('.caption-notes').addEventListener('click', (e) => {
+          const chip = e.target.closest('.caption-unsure-word');
+          if (!chip) return;
+          const word = chip.textContent;
+          const at = textarea.value.toLowerCase().indexOf(word.toLowerCase());
+          textarea.focus();
+          // Focusing selects the caption, which re-renders the list and replaces
+          // this textarea — so select in whichever one is live afterwards.
+          const live = listContainer.querySelector(`.caption-item[data-id="${sub.id}"] .caption-textarea`) || textarea;
+          live.focus();
+          if (at !== -1) live.setSelectionRange(at, at + word.length);
         });
         textarea.addEventListener('focus', () => {
           if (isRestoringFocus) return; // programmatic re-focus, not a user action
@@ -831,7 +1128,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         empty.className = 'caption-empty';
         empty.innerHTML = subs.length
           ? `<p class="caption-empty-title">No matching lines</p>
-             <p class="caption-empty-hint">${reviewOnly
+             <p class="caption-empty-hint">${issuesOnly
+               ? 'No caption in this ratio breaks the delivery limits.'
+               : reviewOnly
                ? 'Nothing in this ratio is flagged for review.'
                : 'No caption in this ratio matches the search.'}</p>`
           : `<p class="caption-empty-title">No captions yet</p>
@@ -919,6 +1218,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       shadowBlur: document.getElementById('shadowBlur'),
       shadowOffsetY: document.getElementById('shadowOffsetY'),
       bottomMargin: document.getElementById('bottomMargin'),
+      textWidth: document.getElementById('textWidth'),
       offsetX: document.getElementById('offsetX'),
       offsetY: document.getElementById('offsetY'),
       animationPreset: document.getElementById('animationPreset')
@@ -935,6 +1235,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     inputs.bgBoxOpacity.addEventListener('input', (e) => document.getElementById('bgBoxOpacityVal').textContent = `${e.target.value}%`);
     inputs.bgBoxPadding.addEventListener('input', (e) => document.getElementById('bgBoxPaddingVal').textContent = `${e.target.value}px`);
     inputs.bottomMargin.addEventListener('input', (e) => document.getElementById('bottomMarginVal').textContent = `${e.target.value}px`);
+    inputs.textWidth.addEventListener('input', (e) => document.getElementById('textWidthVal').textContent = `${e.target.value}%`);
 
     // Alignment buttons
     const alignBtns = document.querySelectorAll('.align-btn');
@@ -981,6 +1282,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         shadowOffsetY: parseInt(inputs.shadowOffsetY.value, 10) || 0,
         align: activeAlignBtn ? activeAlignBtn.dataset.align : 'bottom-center',
         bottomMargin: parseInt(inputs.bottomMargin.value, 10) || 0,
+        textWidth: parseInt(inputs.textWidth.value, 10) || 85,
         offsetX: parseInt(inputs.offsetX.value, 10) || 0,
         offsetY: parseInt(inputs.offsetY.value, 10) || 0,
         animationPreset: inputs.animationPreset.value
@@ -1195,6 +1497,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     set('shadowBlur', num('shadowBlur'));
     set('shadowOffsetY', num('shadowOffsetY'));
     set('bottomMargin', num('bottomMargin'));
+    set('textWidth', num('textWidth'));
     set('offsetX', num('offsetX'));
     set('offsetY', num('offsetY'));
     set('animationPreset', preset.animationPreset || 'none');
@@ -1205,6 +1508,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('bgBoxOpacityVal').textContent = `${num('bgBoxOpacity')}%`;
     document.getElementById('bgBoxPaddingVal').textContent = `${num('bgBoxPadding')}px`;
     document.getElementById('bottomMarginVal').textContent = `${num('bottomMargin')}px`;
+    document.getElementById('textWidthVal').textContent = `${num('textWidth')}%`;
 
     document.querySelectorAll('.align-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.align === (preset.align || 'bottom-center'));
@@ -1275,7 +1579,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const progressBar = document.getElementById('exportProgressBar');
     const progressText = document.getElementById('exportProgressText');
     const note = document.getElementById('exportBackendNote');
+    const scaleSelect = document.getElementById('exportReviewScale');
     let running = false;
+    // 'alpha' = transparent ProRes captions; 'review' = H.264 footage with the
+    // captions burned in. Same modal and the same caption render, different tail.
+    let mode = 'alpha';
 
     const ratioPicker = document.getElementById('exportRatioPicker');
     const ratioBoxes = () => Array.from(ratioPicker.querySelectorAll('input[type=checkbox]'));
@@ -1326,7 +1634,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       const frames = film
-        ? ratios.reduce((sum, r) => sum + Math.ceil(ratioSpan(film, r) * FPS), 0)
+        ? ratios.reduce((sum, r) => sum + Math.ceil(ratioSpan(film, r) * subManager.fps), 0)
         : 0;
       estimate.textContent = frames > 0
         ? `${frames} frames across ${ratios.length} render${ratios.length === 1 ? '' : 's'}`
@@ -1338,6 +1646,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function updateBackendNote() {
+      if (mode === 'review') {
+        note.className = exporter.hasNativeBackend() ? 'export-note' : 'export-note warn';
+        note.textContent = exporter.hasNativeBackend()
+          ? 'Only the captions are rendered; ffmpeg lays them over your footage and writes an H.264 .mp4 with its audio. '
+            + "You'll be asked to locate the footage file the first time."
+          : 'The review copy needs the desktop app: the browser version cannot reach the footage file on disk.';
+        return;
+      }
       if (exporter.hasNativeBackend()) {
         note.className = 'export-note';
         note.textContent = 'Native backend detected — ffmpeg will write a ProRes 4444 .mov with a real alpha channel.';
@@ -1350,8 +1666,73 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
 
-    function openModal() {
+    // --- Export folder: once chosen, renders skip the save dialog ---
+    const folderRow = document.getElementById('exportFolderRow');
+    const folderPath = document.getElementById('exportFolderPath');
+    const chooseFolderBtn = document.getElementById('btnChooseExportFolder');
+    const clearFolderBtn = document.getElementById('btnClearExportFolder');
+    const api = () => window.pywebview && window.pywebview.api;
+
+    function showExportFolder(state) {
+      const path = (state && state.path) || '';
+      const missing = !!path && !state.exists;
+      // The tail of a long path is the part that identifies it.
+      const parts = path.split(/[\\/]/).filter(Boolean);
+      const short = parts.length > 3 ? `…/${parts.slice(-2).join('/')}` : path;
+      folderPath.textContent = !path ? 'Ask each time'
+        : missing ? `${short} (not found — will ask)` : short;
+      folderPath.title = path
+        ? `${path}\nRenders and caption files (SRT, VTT, Premiere XML) are saved here. `
+          + 'Files already there with the same name are replaced.'
+        : 'A save dialog opens for each render and caption file.';
+      folderPath.classList.toggle('unset', !path);
+      folderPath.classList.toggle('missing', missing);
+      clearFolderBtn.classList.toggle('hidden', !path);
+      chooseFolderBtn.textContent = path ? 'Change…' : 'Choose…';
+    }
+
+    async function refreshExportFolder() {
+      // The folder lives in the desktop backend; without it the render is a
+      // browser download and there is no folder to choose.
+      const hasApi = !!(api() && api().export_folder_get);
+      folderRow.classList.toggle('hidden', !hasApi);
+      if (!hasApi) return;
+      try {
+        const res = await api().export_folder_get();
+        if (res && res.ok) showExportFolder(res);
+      } catch (e) { /* leave the row as it was */ }
+    }
+
+    chooseFolderBtn.addEventListener('click', async () => {
+      if (!api() || !api().export_folder_choose) {
+        toast('Choosing a folder needs the desktop window.', 'warn');
+        return;
+      }
+      const res = await api().export_folder_choose();
+      if (res && res.ok) showExportFolder(res);
+      else if (res && res.error && res.error !== 'cancelled') toast(res.error, 'error');
+    });
+
+    clearFolderBtn.addEventListener('click', async () => {
+      const res = await api().export_folder_clear();
+      if (res && res.ok) showExportFolder(res);
+    });
+
+    function openModal(nextMode = 'alpha') {
+      mode = nextMode;
+      const review = mode === 'review';
+      document.getElementById('exportModalTitle').textContent = review
+        ? 'Export Review Copy — H.264 with captions'
+        : 'Export Captions — ProRes 4444 + Alpha';
+      document.getElementById('exportModalHint').textContent = review
+        ? 'Burns the captions into your footage and writes a small H.264 .mp4 to send for sign-off. '
+          + 'Footage that does not match the chosen ratio is letterboxed or pillarboxed inside the frame.'
+        : 'Renders the captions only, on a fully transparent background, at the project resolution. '
+          + 'Drop the result on a track above your footage in Premiere Pro — the alpha channel is read automatically.';
+      document.getElementById('exportCodecRow').classList.toggle('hidden', review);
+      document.getElementById('exportReviewScaleRow').classList.toggle('hidden', !review);
       updateRatioPicker();
+      refreshExportFolder();
       // Default to the ratio on screen, if it has anything in it.
       const film = project.getActive();
       ratioBoxes().forEach(box => {
@@ -1375,7 +1756,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       modal.classList.add('hidden');
     }
 
-    document.getElementById('btnExportAlpha').addEventListener('click', openModal);
+    document.getElementById('btnExportAlpha').addEventListener('click', () => openModal('alpha'));
+    document.getElementById('btnExportReview').addEventListener('click', () => {
+      const film = project.getActive();
+      if (!film || !hasLiveMedia(film.id)) {
+        toast('Load the footage first — the review copy is made from it.', 'warn');
+        return;
+      }
+      openModal('review');
+    });
     document.getElementById('btnCloseExportModal').addEventListener('click', closeModal);
     cancelBtn.addEventListener('click', closeModal);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
@@ -1398,6 +1787,27 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (running) return;
       const ratios = chosenRatios();
       if (ratios.length === 0) return;
+
+      // A review copy needs the footage on disk, and a webview File has no
+      // path, so the backend asks once through a native dialog. Asking before
+      // any frame is drawn means a cancelled dialog costs nothing.
+      let sourcePath = '';
+      if (mode === 'review') {
+        if (!exporter.hasNativeBackend() || !api().locate_source_media) {
+          toast('The review copy needs the desktop app.', 'warn');
+          return;
+        }
+        const rt = filmRuntimes.get(project.activeId) || {};
+        const located = await api().locate_source_media(
+          (rt.file && rt.file.name) || '', rt.sourcePath || '');
+        if (!located || !located.ok) {
+          if (located && located.error && located.error !== 'cancelled') toast(located.error, 'error');
+          return;
+        }
+        sourcePath = located.path;
+        rt.sourcePath = sourcePath;
+        filmRuntimes.set(project.activeId, rt);
+      }
 
       running = true;
       playerController.pause();
@@ -1425,7 +1835,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             rangeMode: rangeSelect.value,
             profile: parseInt(profileSelect.value, 10),
             padStart: 0.5,
-            filename: exportName('_alpha.mov', ratios[i]),
+            filename: exportName(mode === 'review' ? '_review.mp4' : '_alpha.mov', ratios[i]),
+            review: mode === 'review'
+              ? { sourcePath, scale: parseFloat(scaleSelect.value) || 1 }
+              : null,
             onFontWarning: (missing) => {
               if (warnedFonts) return;
               warnedFonts = true;
@@ -1442,8 +1855,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           done.push({ ratio: label, result });
         }
 
+        const reviews = done.filter(d => d.result.mode === 'review').map(d => `${d.ratio}: ${d.result.path}`);
         const paths = done.filter(d => d.result.mode === 'prores').map(d => `${d.ratio}: ${d.result.path}`);
-        toast(paths.length
+        toast(reviews.length
+          ? `Review copy written:\n${reviews.join('\n')}`
+          : paths.length
           ? `ProRes 4444 with alpha written:\n${paths.join('\n')}`
           : `Exported ${done.length} transparent PNG sequence${done.length === 1 ? '' : 's'} as ZIP`
             + `${done.length === 1 ? '' : 's'}.\nSee ENCODE_TO_PRORES.txt inside for the ffmpeg command.`,
@@ -1552,7 +1968,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       maxCharsPerLine: opts.maxCharsPerLine,
       maxLines: opts.maxLines,
       maxDurationSec: opts.maxDurationSec,
-      fps: FPS
+      fps: subManager.fps
     });
 
     const words = transcriber.collectWords(result);
@@ -1689,12 +2105,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       const model = (settings.models || []).find(m => m.id === modelSelect.value);
 
       const englishOnly = !!(model && model.english_only);
+      // A model that names its languages (Parakeet v3's 25 European ones)
+      // cannot be pointed at any other; auto-detect stays open within them.
+      const covered = model && Array.isArray(model.languages) && !englishOnly
+        ? model.languages : null;
       Array.from(langSelect.options).forEach(opt => {
-        const blocked = englishOnly && opt.value !== 'en';
+        const blocked = (englishOnly && opt.value !== 'en')
+          || (covered && opt.value !== 'auto' && covered.indexOf(opt.value) === -1);
         opt.disabled = blocked;
         opt.textContent = opt.textContent.replace(/ — unavailable.*$/, '');
         if (blocked && opt.value === 'auto') opt.textContent += ' — unavailable (English-only model)';
       });
+      if (covered && langSelect.selectedOptions[0] && langSelect.selectedOptions[0].disabled) {
+        langSelect.value = 'auto';
+      }
       if (englishOnly) {
         langSelect.value = 'en';
         modelNote.textContent = `${model.label} is English-only — language locked to English.`;
@@ -1936,6 +2360,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('btnNewProject').addEventListener('click', newProject);
     document.getElementById('btnOpenProject').addEventListener('click', openProject);
+    document.getElementById('btnClearRecentProjects').addEventListener('click', clearRecentProjects);
+    // Refresh when the menu opens, so saves and opens made since are reflected
+    // without every code path having to push an update.
+    document.getElementById('btnOpenProject').closest('[data-menu]')
+      .querySelector('[data-menu-trigger]').addEventListener('click', refreshRecentProjects);
+    refreshRecentProjects();
     document.getElementById('btnSaveProject').addEventListener('click', () => saveProject());
     document.getElementById('btnSaveProjectAs').addEventListener('click', () => saveProject({ saveAs: true }));
 
@@ -2075,7 +2505,225 @@ document.addEventListener('DOMContentLoaded', async () => {
     return film;
   }
 
+  // --- undo / redo ----------------------------------------------------------
+  /**
+   * What an undo step holds: every film's captions and style in every ratio.
+   * Whole-project rather than the ratio on screen, because several edits reach
+   * past it — a transcription writes all four ratios, "To all ratios" copies
+   * over the other three — and undoing half of one of those would leave the
+   * ratios disagreeing in a way nobody asked for.
+   */
+  function captureForUndo() {
+    const film = captureActiveFilm();
+    return {
+      content: project.getFilms().map(f => ({
+        id: f.id,
+        ratios: RATIO_IDS.reduce((out, rid) => {
+          out[rid] = { subtitles: f.ratios[rid].subtitles, preset: f.ratios[rid].preset };
+          return out;
+        }, {})
+      })),
+      location: film ? { filmId: film.id, ratio: film.activeRatio } : null
+    };
+  }
+
+  /**
+   * Writes a snapshot back and puts the editor on the film and ratio where the
+   * change was made. Films added since are left alone, and films removed since
+   * stay removed — deleting a film is confirmed, and its media is already gone.
+   */
+  function restoreFromUndo(content, location) {
+    content.forEach(saved => {
+      const film = project.getFilm(saved.id);
+      if (!film) return;
+      RATIO_IDS.forEach(rid => {
+        if (!saved.ratios[rid] || !film.ratios[rid]) return;
+        film.ratios[rid].subtitles = saved.ratios[rid].subtitles.map(sub => ({ ...sub }));
+        film.ratios[rid].preset = { ...saved.ratios[rid].preset };
+      });
+    });
+
+    // Repoint without capturing first: capturing would copy the editor's state
+    // straight back over the snapshot that was just restored.
+    let filmChanged = false;
+    if (location && project.getFilm(location.filmId)) {
+      if (project.activeId !== location.filmId) {
+        project.setActive(location.filmId);
+        filmChanged = true;
+      }
+      const target = project.getActive();
+      if (target.ratios[location.ratio]) target.activeRatio = location.ratio;
+    }
+
+    const film = project.getActive();
+    if (filmChanged) {
+      applyActiveFilm();
+    } else {
+      // Same film: only the ratio state needs reapplying. A full film apply
+      // would reload the media and jump the playhead for nothing.
+      swappingFilm = true;
+      try {
+        applyRatioState(film, film.activeRatio);
+      } finally {
+        swappingFilm = false;
+      }
+    }
+    renderProjectUI();
+    project.markDirty();
+    scheduleAutosave();
+  }
+
+  function undoEdit() {
+    if (!undoHistory || !undoHistory.undo()) toast('Nothing to undo.', 'info', 1800);
+  }
+
+  function redoEdit() {
+    if (!undoHistory || !undoHistory.redo()) toast('Nothing to redo.', 'info', 1800);
+  }
+
+  function updateUndoButtons(canUndo, canRedo) {
+    const undoBtn = document.getElementById('btnUndo');
+    const redoBtn = document.getElementById('btnRedo');
+    if (undoBtn) undoBtn.disabled = !canUndo;
+    if (redoBtn) redoBtn.disabled = !canRedo;
+  }
+
   /** Points every controller at the active film. The inverse of the above. */
+  // --- project timing: frame rate & start timecode ------------------------
+  /** Fills the header controls from the live settings. */
+  function syncTimingUI() {
+    const select = document.getElementById('frameRateSelect');
+    if (select) {
+      if (!select.options.length) {
+        FRAME_RATES.forEach(r => {
+          const opt = document.createElement('option');
+          opt.value = r.id;
+          opt.textContent = `${r.label} fps`;
+          select.appendChild(opt);
+        });
+      }
+      select.value = subManager.rateId;
+    }
+    const startInput = document.getElementById('startTimecodeInput');
+    if (startInput) {
+      startInput.value = subManager.startTimecode;
+      startInput.classList.remove('invalid');
+    }
+    const info = document.getElementById('exportFpsInfo');
+    if (info) info.textContent = `${subManager.rate.label} fps`;
+    const box = document.getElementById('headerTimecodeBox');
+    if (box) box.title = `Playhead timecode (${subManager.rate.label} fps${subManager.dropFrame ? ', drop-frame' : ''})`;
+  }
+
+  /**
+   * Makes the project's rate and start timecode the live ones everywhere. The
+   * modules each keep their own copy of the rate (they were handed it at
+   * construction), so they are re-pointed here, then everything that prints a
+   * timecode is redrawn. Caption times are seconds, so none of them move.
+   */
+  function applyProjectTiming() {
+    subManager.setFrameRate(project.frameRate);
+    subManager.setStartTimecode(project.startTimecode);
+    project.startTimecode = subManager.startTimecode; // stored in its normalised form
+    const fps = subManager.fps;
+    project.fps = Math.round(fps * 100) / 100;
+    playerController.fps = fps;
+    timelineController.fps = fps;
+    exporter.fps = fps;
+    segmenter.updateSettings({ fps });
+    syncTimingUI();
+    timelineController.resizeAndDraw();
+    playerController.emitTimeUpdate();
+    subManager.notify(); // caption list timecodes
+  }
+
+  function bindTimingControls() {
+    syncTimingUI();
+    const select = document.getElementById('frameRateSelect');
+    const startInput = document.getElementById('startTimecodeInput');
+
+    select.addEventListener('change', () => {
+      project.frameRate = select.value;
+      applyProjectTiming();
+      project.markDirty();
+      scheduleAutosave();
+    });
+
+    startInput.addEventListener('change', () => {
+      // Accept "01:00:00:00" or the drop-frame "01:00:00;00" spelling.
+      if (subManager.timecodeToFrames(startInput.value) === null) {
+        startInput.classList.add('invalid');
+        toast('Start timecode must look like 01:00:00:00.', 'error');
+        return;
+      }
+      project.startTimecode = startInput.value.trim();
+      applyProjectTiming();
+      project.markDirty();
+      scheduleAutosave();
+    });
+  }
+
+  /**
+   * Reads the frame rate of the loaded video from the timestamps of its
+   * presented frames (requestVideoFrameCallback). The clip is played muted for
+   * a moment, since frames are only reported as they are shown; the smallest gap
+   * between consecutive frames is used, which dropped frames cannot inflate.
+   * Resolves to a number, or null when the browser cannot say — callers must
+   * treat null as "unknown" and change nothing.
+   */
+  function detectMediaFrameRate() {
+    const video = playerController.video;
+    if (!video || !video.requestVideoFrameCallback || !video.videoWidth) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const prev = { time: video.currentTime, muted: video.muted, rate: video.playbackRate };
+      const times = [];
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        video.pause();
+        video.muted = prev.muted;
+        video.playbackRate = prev.rate;
+        try { video.currentTime = prev.time; } catch (e) { /* not seekable */ }
+        const gaps = [];
+        for (let i = 1; i < times.length; i++) {
+          const g = times[i] - times[i - 1];
+          if (g > 0.001) gaps.push(g);
+        }
+        // Need a handful of frames to trust the answer.
+        resolve(gaps.length >= 6 ? 1 / Math.min(...gaps) : null);
+      };
+      const onFrame = (now, meta) => {
+        if (done) return;
+        if (!times.length || meta.mediaTime > times[times.length - 1]) times.push(meta.mediaTime);
+        if (times.length >= 14) finish(); else video.requestVideoFrameCallback(onFrame);
+      };
+      video.muted = true;
+      video.playbackRate = 1;
+      video.requestVideoFrameCallback(onFrame);
+      video.play().catch(finish);
+      setTimeout(finish, 2500);
+    });
+  }
+
+  /** After new media loads: if its rate differs from the project's, offer the switch. */
+  async function offerDetectedFrameRate() {
+    if (playerController.isPlaying) return;
+    const detected = await detectMediaFrameRate();
+    if (!detected) return;
+    const match = nearestFrameRate(detected);
+    if (!match || (match.num / match.den) === subManager.fps) return;
+    const label = match.label;
+    if (confirm(`This media looks like ${label} fps, but the project is ${subManager.rate.label} fps.\n\n`
+      + `Switch the project to ${label} fps?`)) {
+      project.frameRate = match.id;
+      applyProjectTiming();
+      project.markDirty();
+      scheduleAutosave();
+      toast(`Project frame rate set to ${label} fps.`, 'success');
+    }
+  }
+
   function applyActiveFilm() {
     const film = project.getActive();
     if (!film) return;
@@ -2085,6 +2733,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // rest of the session.
     swappingFilm = true;
     try {
+      // A loaded or new project can carry a different rate than the live one.
+      if (subManager.rateId !== project.frameRate || subManager.startTimecode !== project.startTimecode) {
+        applyProjectTiming();
+      }
       applyFilmState(film);
     } finally {
       swappingFilm = false;
@@ -2355,6 +3007,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.getElementById('mediaInfoLabel').textContent = file.name;
       document.getElementById('programFrame').classList.add('has-media');
       if (opts.fresh) lastTranscription = null;
+      // Brand-new media: once a frame is decodable, see whether its rate matches.
+      if (opts.fresh && playerController.video) {
+        playerController.video.addEventListener('loadeddata', () => {
+          if (filmId === project.activeId) offerDetectedFrameRate();
+        }, { once: true });
+      }
     }
 
     decodeWaveformFor(filmId, file);
@@ -2517,6 +3175,64 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('projectFileInput').click();
   }
 
+  // --- recent projects ----------------------------------------------------
+  // The list lives in the backend's preferences.json (the native window forgets
+  // localStorage on close); the backend updates it on every save and open.
+  async function refreshRecentProjects() {
+    const api = window.pywebview && window.pywebview.api;
+    const section = document.getElementById('recentProjectsSection');
+    const list = document.getElementById('recentProjectsList');
+    if (!api || !api.project_recent_get) { section.classList.add('hidden'); return; }
+    let projects = [];
+    try {
+      const res = await api.project_recent_get();
+      if (res && res.ok) projects = res.projects || [];
+    } catch (e) { /* leave the section hidden */ }
+
+    list.textContent = '';
+    projects.forEach(path => {
+      const parts = path.split(/[\\/]/).filter(Boolean);
+      const file = parts[parts.length - 1] || path;
+      const name = file.replace(/\.(ttproj|json)$/i, '');
+      const folder = parts.length > 1 ? parts[parts.length - 2] : '';
+      const item = document.createElement('button');
+      item.className = 'menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.title = path;
+      const label = document.createElement('span');
+      label.className = 'menu-item-label';
+      label.textContent = name;
+      const sub = document.createElement('em');
+      sub.textContent = folder;
+      label.appendChild(sub);
+      item.appendChild(label);
+      item.addEventListener('click', () => openRecentProject(path));
+      list.appendChild(item);
+    });
+    section.classList.toggle('hidden', !projects.length);
+  }
+
+  async function openRecentProject(path) {
+    if (!confirmDiscard('Open another project')) return;
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || !api.project_open_path) return;
+    try {
+      const res = await api.project_open_path(path);
+      if (res && res.ok) adoptProjectText(res.content, res.path);
+      else if (res && res.error) toast(res.error, 'error', 8000);
+    } catch (e) {
+      toast('Could not open that project.', 'error', 8000);
+    }
+    refreshRecentProjects();
+  }
+
+  async function clearRecentProjects() {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || !api.project_recent_clear) return;
+    try { await api.project_recent_clear(); } catch (e) { /* nothing to clear */ }
+    refreshRecentProjects();
+  }
+
   function adoptProjectText(text, path) {
     let data;
     try {
@@ -2540,6 +3256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyActiveFilm();
     renderProjectUI();
     writeAutosave();
+    if (undoHistory) undoHistory.reset();
 
     const waiting = unlinkedCount();
     toast(`Opened "${project.name}" — ${project.getFilms().length} film`
@@ -2557,6 +3274,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyActiveFilm();
     renderProjectUI();
     writeAutosave();
+    if (undoHistory) undoHistory.reset();
     toast('New project started.', 'success');
   }
 
@@ -2569,6 +3287,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   function scheduleAutosave() {
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(writeAutosave, 1500);
+    // Every edit that is worth autosaving is worth undoing, so the history
+    // listens here rather than at each of the routes that change captions.
+    if (undoHistory) undoHistory.schedule();
   }
 
   function writeAutosave() {
@@ -2703,6 +3424,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Project commands are deliberately outside the editor handler below: they
     // carry a modifier, and Cmd+S has to work while the caret is in a caption
     // box — that is exactly when you most want it to.
+    // Find / replace. Matched on e.code because Option+F types "ƒ" on a Mac,
+    // and kept apart from the handler below, which ignores Alt chords.
+    window.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.code !== 'KeyF') return;
+      e.preventDefault();
+      focusCaptionSearch(e.altKey);
+    });
+
     window.addEventListener('keydown', (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
@@ -2712,6 +3441,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (key === 'o') {
         e.preventDefault();
         openProject();
+      } else if (key === 'z' || (key === 'y' && !e.shiftKey)) {
+        // Inside a text box the field's own undo is the one wanted — it steps
+        // back a word, not the whole caption. Once the caret leaves, the
+        // edit is one step in the project's history like any other.
+        const t = e.target;
+        if (['INPUT', 'TEXTAREA'].includes(t.tagName) || t.isContentEditable) return;
+        if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+        e.preventDefault();
+        if (key === 'y' || e.shiftKey) redoEdit();
+        else undoEdit();
       }
     });
 
@@ -2831,12 +3570,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /** Uses the desktop save dialog when available, otherwise a browser download. */
-  async function saveTextFile(content, fileName, mimeType) {
+  async function saveTextFile(content, fileName, mimeType, useExportFolder = false) {
     if (window.pywebview && window.pywebview.api && window.pywebview.api.save_text_file) {
       try {
-        const res = await window.pywebview.api.save_text_file(fileName, content);
+        const res = await window.pywebview.api.save_text_file(fileName, content, useExportFolder);
         if (res && res.ok) {
-          toast(`Saved to ${res.path}`, 'success', 6000);
+          toast(res.in_export_folder ? `Saved to export folder: ${res.path}` : `Saved to ${res.path}`,
+            'success', 6000);
           return;
         }
         if (res && res.error && res.error !== 'Save cancelled.') {
@@ -2849,6 +3589,33 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
     downloadFile(content, fileName, mimeType);
+    toast(`Downloaded ${fileName}.`, 'success');
+  }
+
+  /** Same as saveTextFile, for bytes (EBU-STL). The bridge carries them as base64. */
+  async function saveBinaryFile(bytes, fileName, mimeType, useExportFolder = false) {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.save_binary_file) {
+      try {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        }
+        const res = await window.pywebview.api.save_binary_file(fileName, btoa(bin), useExportFolder);
+        if (res && res.ok) {
+          toast(res.in_export_folder ? `Saved to export folder: ${res.path}` : `Saved to ${res.path}`,
+            'success', 6000);
+          return;
+        }
+        if (res && res.error && res.error !== 'Save cancelled.') {
+          toast(res.error, 'error');
+          return;
+        }
+        return; // user cancelled
+      } catch (e) {
+        // fall through to the browser download
+      }
+    }
+    downloadFile(bytes, fileName, mimeType);
     toast(`Downloaded ${fileName}.`, 'success');
   }
 
@@ -2950,11 +3717,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       drawTracked('NO MEDIA', w / 2, baseline - 52 * s, Math.round(22 * s), sans, 5 * s, maxW);
 
       dctx.fillStyle = SLATE_TEXT;
-      drawTracked(subManager.secondsToTimecode(timeSec, FPS),
+      drawTracked(subManager.secondsToTimecode(timeSec),
         w / 2, baseline + 26 * s, Math.round(72 * s), mono, 2 * s, maxW);
 
       dctx.fillStyle = SLATE_MUTED;
-      drawTracked(`${w} \u00d7 ${h}  \u00b7  ${FPS} FPS`,
+      drawTracked(`${w} \u00d7 ${h}  \u00b7  ${subManager.rate.label} FPS`,
         w / 2, baseline + 74 * s, Math.round(20 * s), mono, 2 * s, maxW);
     });
   }
