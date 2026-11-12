@@ -366,7 +366,8 @@ class Transcriber:
             if runtime_id == '__recommended__':
                 ids = registry.recommended_runtimes()
                 pending = [i for i in ids
-                           if not registry.module_available(registry.RUNTIMES[i]['module'])]
+                           if not registry.module_available(registry.RUNTIMES[i]['module'])
+                           or registry.runtime_outdated(registry.RUNTIMES[i])]
                 if not pending:
                     return {'ok': False, 'error': 'Everything recommended is already installed.'}
                 packages = []

@@ -582,14 +582,49 @@ def module_available(module_name):
         return False
 
 
+def runtime_outdated(runtime):
+    """
+    Whether an installed runtime falls short of its own package list.
+
+    "Installed" only proves the module imports, so a runtime installed by an
+    earlier release stays "installed" forever even when this release needs a
+    newer version of it, or an extra package alongside it (the aligner's
+    uroman and num2words). Comparing against the requirement strings lets
+    Settings offer an update, which is the same pip install: pip upgrades
+    anything whose minimum is not met.
+
+    Never raises; if the versions cannot be read, the runtime is reported
+    current rather than nagging about something that may be fine.
+    """
+    try:
+        from importlib import metadata
+        from packaging.requirements import Requirement
+    except Exception:
+        return False
+    for spec in runtime.get('packages') or []:
+        try:
+            req = Requirement(spec)
+            try:
+                have = metadata.version(req.name)
+            except metadata.PackageNotFoundError:
+                return True
+            if req.specifier and not req.specifier.contains(have, prereleases=True):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def list_runtimes():
     """Installable runtimes for this machine, with live installed state."""
     out = []
     for rt in RUNTIMES.values():
         if not runtime_supported(rt):
             continue
+        installed = module_available(rt['module'])
         out.append(dict(rt,
-                        installed=module_available(rt['module']),
+                        installed=installed,
+                        outdated=installed and runtime_outdated(rt),
                         recommended=rt['id'] in recommended_runtimes()))
     return out
 
