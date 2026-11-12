@@ -225,6 +225,19 @@ every ratio before you tune it for one. **Line Width** is the exception: it is a
 share of the frame's width — how far towards the edges a line may run before it
 wraps — so a narrow 9:16 can be given more room than a 16:9 needs.
 
+### Styling a single caption
+
+Select a caption and switch the Style panel from **Ratio** to **This caption**
+to give it its own font, size, colour, position or anything else in the panel.
+Only the settings you change are kept on the caption, so later changes to the
+ratio style still reach everything else about it. Choosing a preset while
+editing a caption applies it to that caption alone, **Use ratio style** (or
+**Reset**) drops its own settings, and an **Aa** badge in the caption list marks
+which captions have them. A split caption keeps its style in both halves.
+
+Per-caption styles are drawn into the ProRes and review-copy exports. Caption
+files (SRT, VTT, TTML, SCC, STL, Premiere XML) carry the text and timing only.
+
 ### Exporting every ratio at once
 
 The ProRes + alpha dialog opens on a row of ratio checkboxes. Tick as many as

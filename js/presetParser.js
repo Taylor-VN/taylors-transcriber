@@ -34,7 +34,10 @@ class PresetParser {
         enableShadow: true,
         shadowColor: '#000000',
         shadowBlur: 12,
-        shadowOffsetY: 6,
+        shadowOpacity: 100,
+        shadowAngle: 180,
+        shadowDistance: 6,
+        shadowSize: 0,
         align: 'bottom-center',
         bottomMargin: 75,
         animationPreset: 'none'
@@ -58,7 +61,10 @@ class PresetParser {
         enableShadow: true,
         shadowColor: '#000000',
         shadowBlur: 15,
-        shadowOffsetY: 9,
+        shadowOpacity: 100,
+        shadowAngle: 180,
+        shadowDistance: 9,
+        shadowSize: 0,
         align: 'bottom-center',
         bottomMargin: 90,
         animationPreset: 'pop'
@@ -85,7 +91,10 @@ class PresetParser {
         enableShadow: true,
         shadowColor: '#000000',
         shadowBlur: 10,
-        shadowOffsetY: 3,
+        shadowOpacity: 100,
+        shadowAngle: 180,
+        shadowDistance: 3,
+        shadowSize: 0,
         align: 'bottom-center',
         bottomMargin: 80,
         animationPreset: 'none'
@@ -109,7 +118,10 @@ class PresetParser {
         enableShadow: false,
         shadowColor: '#000000',
         shadowBlur: 0,
-        shadowOffsetY: 0,
+        shadowOpacity: 100,
+        shadowAngle: 180,
+        shadowDistance: 0,
+        shadowSize: 0,
         align: 'bottom-center',
         bottomMargin: 83,
         animationPreset: 'fade'
@@ -133,7 +145,10 @@ class PresetParser {
         enableShadow: true,
         shadowColor: '#00ffff',
         shadowBlur: 24,
-        shadowOffsetY: 0,
+        shadowOpacity: 100,
+        shadowAngle: 180,
+        shadowDistance: 0,
+        shadowSize: 0,
         align: 'bottom-center',
         bottomMargin: 75,
         animationPreset: 'karaoke'
@@ -157,7 +172,10 @@ class PresetParser {
         enableShadow: true,
         shadowColor: '#000000',
         shadowBlur: 15,
-        shadowOffsetY: 6,
+        shadowOpacity: 100,
+        shadowAngle: 180,
+        shadowDistance: 6,
+        shadowSize: 0,
         align: 'bottom-center',
         bottomMargin: 60,
         animationPreset: 'none'
@@ -252,8 +270,14 @@ class PresetParser {
         bgBoxPadding: this.toNumber(lookup(['BackgroundPadding', 'BackgroundBoxPadding', 'bgBoxPadding'], null)) ?? 18,
         enableShadow: shadowEnabled !== null ? shadowEnabled : !!shadowColorRaw,
         shadowColor: this.parseColorString(shadowColorRaw) || '#000000',
+        shadowOpacity: this.toNumber(lookup(['ShadowOpacity', 'shadowOpacity'], null)) ?? 100,
+        shadowAngle: this.toNumber(lookup(['ShadowAngle', 'shadowAngle'], null)) ?? undefined,
+        shadowDistance: this.toNumber(lookup(['ShadowDistance', 'shadowDistance'], null)) ?? undefined,
+        shadowSize: this.toNumber(lookup(['ShadowSize', 'ShadowSpread', 'shadowSize'], null)) ?? 0,
         shadowBlur: this.toNumber(lookup(['ShadowBlur', 'ShadowSoftness', 'shadowBlur'], null)) ?? 12,
-        shadowOffsetY: this.toNumber(lookup(['ShadowOffsetY', 'ShadowDistance', 'shadowOffsetY'], null)) ?? 6,
+        // Files written before the shadow had an angle carry one signed
+        // vertical offset instead; normalizePreset turns it into angle/distance.
+        shadowOffsetY: this.toNumber(lookup(['ShadowOffsetY', 'shadowOffsetY'], null)) ?? 6,
         align: this.normalizeAlign(lookup(['Alignment', 'Align', 'TextAlignment', 'align'], null)),
         bottomMargin: this.toNumber(lookup(['BottomMargin', 'SafeMargin', 'bottomMargin'], null)) ?? 75,
         textWidth: this.toNumber(lookup(['TextBoxWidth', 'LineWidth', 'textWidth'], null)) ?? 85,
@@ -273,9 +297,8 @@ class PresetParser {
    * Decodes a genuine Premiere Pro .prtextstyle.
    *
    * Returns null when the document is not one, so the caller can fall back to
-   * the generic tag sweep. Fields Premiere does not store — animation, and the
-   * shadow's angle and opacity, which this app's single vertical offset cannot
-   * express — keep this app's defaults rather than being invented.
+   * the generic tag sweep. Fields Premiere does not store — animation — keep
+   * this app's defaults rather than being invented.
    */
   parsePremiereTextStyle(doc, rawText, baseName) {
     if (typeof PremiereStyleDecoder === 'undefined') return null;
@@ -331,10 +354,11 @@ class PresetParser {
 
       enableShadow: !!shadow.visible,
       shadowColor: shadow.color || '#000000',
-      shadowBlur: Math.round(shadow.blur || 0),
-      // Premiere throws the shadow at an angle; this app only offsets it
-      // downwards, so the distance is kept and the angle dropped.
-      shadowOffsetY: Math.round(shadow.distance || 0),
+      shadowOpacity: shadow.opacity !== undefined ? shadow.opacity : 75,
+      shadowAngle: shadow.angle !== undefined ? shadow.angle : 135,
+      shadowDistance: shadow.distance || 0,
+      shadowSize: shadow.size || 0,
+      shadowBlur: shadow.blur || 0,
 
       enableBgBox: !!background.visible,
       bgBoxColor: background.color || '#000000',
@@ -542,11 +566,26 @@ class PresetParser {
     return null;
   }
 
+  /**
+   * Styles saved before the shadow had an angle carry one signed vertical
+   * offset (shadowOffsetY). The same shadow as Premiere's angle and distance:
+   * straight down for a positive offset, straight up for a negative one.
+   * Anything already carrying a distance is returned untouched.
+   */
+  static migrateShadowOffset(style) {
+    if (!style || style.shadowOffsetY === undefined) return style;
+    const { shadowOffsetY, ...rest } = style;
+    if (rest.shadowDistance !== undefined) return rest;
+    const y = Number(shadowOffsetY) || 0;
+    return { ...rest, shadowAngle: y < 0 ? 0 : 180, shadowDistance: Math.abs(y) };
+  }
+
   normalizePreset(presetObj, nameFallback) {
     const num = (v, d) => {
       const n = this.toNumber(v);
       return n === null ? d : n;
     };
+    const shadow = PresetParser.migrateShadowOffset(presetObj);
     return {
       id: presetObj.id || 'custom_' + Date.now(),
       name: presetObj.name || nameFallback || 'Imported Premiere Preset',
@@ -572,8 +611,14 @@ class PresetParser {
       bgBoxPadding: num(presetObj.bgBoxPadding, 18),
       enableShadow: presetObj.enableShadow !== undefined ? !!presetObj.enableShadow : true,
       shadowColor: this.parseColorString(presetObj.shadowColor) || '#000000',
-      shadowBlur: num(presetObj.shadowBlur, 12),
-      shadowOffsetY: num(presetObj.shadowOffsetY, 6),
+      // Premiere's Shadow controls one for one. The angle is the direction the
+      // shadow is thrown, clockwise from straight up (180 = straight down);
+      // distance, size and blur are 1080-reference pixels.
+      shadowOpacity: Math.min(100, Math.max(0, num(shadow.shadowOpacity, 100))),
+      shadowAngle: num(shadow.shadowAngle, 180),
+      shadowDistance: Math.max(0, num(shadow.shadowDistance, 6)),
+      shadowSize: Math.max(0, num(shadow.shadowSize, 0)),
+      shadowBlur: Math.max(0, num(shadow.shadowBlur, 12)),
       align: this.normalizeAlign(presetObj.align),
       bottomMargin: num(presetObj.bottomMargin, 75),
       // Wrap width as a percentage of the frame width — how close to the
@@ -616,8 +661,11 @@ class PresetParser {
     <BackgroundBoxPadding>${esc(preset.bgBoxPadding)}</BackgroundBoxPadding>
     <ShadowEnabled>${esc(!!preset.enableShadow)}</ShadowEnabled>
     <ShadowColor>${esc(preset.shadowColor)}</ShadowColor>
+    <ShadowOpacity>${esc(preset.shadowOpacity !== undefined ? preset.shadowOpacity : 100)}</ShadowOpacity>
+    <ShadowAngle>${esc(preset.shadowAngle !== undefined ? preset.shadowAngle : 180)}</ShadowAngle>
+    <ShadowDistance>${esc(preset.shadowDistance || 0)}</ShadowDistance>
+    <ShadowSize>${esc(preset.shadowSize || 0)}</ShadowSize>
     <ShadowBlur>${esc(preset.shadowBlur)}</ShadowBlur>
-    <ShadowOffsetY>${esc(preset.shadowOffsetY)}</ShadowOffsetY>
     <Alignment>${esc(preset.align)}</Alignment>
     <BottomMargin>${esc(preset.bottomMargin)}</BottomMargin>
     <TextBoxWidth>${esc(preset.textWidth || 85)}</TextBoxWidth>

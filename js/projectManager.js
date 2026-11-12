@@ -366,7 +366,8 @@ class ProjectManager {
         end: s.end,
         text: s.text,
         speaker: s.speaker || '',
-        uncertain: s.uncertain && s.uncertain.length ? s.uncertain : undefined
+        uncertain: s.uncertain && s.uncertain.length ? s.uncertain : undefined,
+        style: s.style && Object.keys(s.style).length ? s.style : undefined
       }))
     });
 

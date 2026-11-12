@@ -2295,3 +2295,49 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   cursor: pointer;
 }
 .caption-unsure-word:hover { background: rgba(224, 160, 50, 0.2); }
+
+/* --- per-caption style ------------------------------------------------ */
+
+.style-scope {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.style-scope-btn {
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.style-scope-btn + .style-scope-btn { border-left: 1px solid var(--border); }
+.style-scope-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.style-scope-btn.active { background: var(--accent-quiet); color: var(--text); }
+.style-scope-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Says plainly that the panel is not editing the shared style right now —
+   the easy mistake is restyling one caption while meaning to restyle all. */
+.caption-style-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  background: var(--accent-quiet);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-micro);
+  color: var(--text);
+}
+.caption-style-bar.hidden { display: none; }
+
+.caption-styled {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent-hover);
+  border: 1px solid var(--accent-quiet);
+  border-radius: 3px;
+  padding: 0 4px;
+}

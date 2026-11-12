@@ -206,9 +206,29 @@ class SubtitleManager {
       // Carried through from transcription so the review UI can point at the
       // words the model was unsure about. Absent for hand-authored captions.
       words: Array.isArray(sub.words) ? sub.words : undefined,
-      uncertain: Array.isArray(sub.uncertain) ? sub.uncertain : undefined
+      uncertain: Array.isArray(sub.uncertain) ? sub.uncertain : undefined,
+      // Overrides on top of the ratio's style — only the settings this one
+      // caption changes. Absent for a caption that simply wears the style.
+      style: SubtitleManager.cleanStyle(sub.style)
     })).sort((a, b) => a.start - b.start);
     this.notify();
+  }
+
+  /** A caption's style overrides, or undefined when there are none. */
+  static cleanStyle(style) {
+    if (!style || typeof style !== 'object') return undefined;
+    // An older project's caption may still carry the pre-angle shadow offset.
+    style = PresetParser.migrateShadowOffset(style);
+    const keys = Object.keys(style).filter(k => style[k] !== undefined);
+    if (!keys.length) return undefined;
+    const out = {};
+    keys.forEach(k => { out[k] = style[k]; });
+    return out;
+  }
+
+  /** The style a caption is drawn in: the ratio's, with its own changes on top. */
+  static effectiveStyle(sub, preset) {
+    return sub && sub.style ? { ...preset, ...sub.style } : preset;
   }
 
   /** Captions carrying at least one word the model was unsure about. */
@@ -244,6 +264,7 @@ class SubtitleManager {
     if (updates.end !== undefined && !isNaN(updates.end)) sub.end = Math.max(sub.start + 0.1, updates.end);
     if (updates.text !== undefined) sub.text = updates.text;
     if (updates.speaker !== undefined) sub.speaker = updates.speaker;
+    if (updates.style !== undefined) sub.style = SubtitleManager.cleanStyle(updates.style);
 
     this.subtitles.sort((a, b) => a.start - b.start);
     if (!opts.silent) this.notify();
@@ -307,7 +328,12 @@ class SubtitleManager {
     sub.end = timeSec;
     sub.text = text1;
 
-    this.addSubtitle(timeSec + (1 / this.fps), originalEnd, text2, sub.speaker);
+    const added = this.addSubtitle(timeSec + (1 / this.fps), originalEnd, text2, sub.speaker);
+    // Both halves of a styled caption keep its look.
+    if (sub.style) {
+      added.style = { ...sub.style };
+      this.notify();
+    }
     return true;
   }
 

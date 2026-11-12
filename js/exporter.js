@@ -50,19 +50,25 @@ class AlphaExporter {
    * back to a system font, which would make the export differ from the preview,
    * so always settle the font set first.
    */
-  async ensureFontsReady(preset) {
+  async ensureFontsReady(presets) {
     if (!document.fonts) return { ready: true, missing: [] };
     try {
       // drawSubtitleFrame prefers the PostScript face an imported Premiere
-      // style names, so that is the one the export has to have loaded.
-      const family = preset && (preset.fontPostScriptName || preset.fontFamily);
-      if (family) {
-        const weight = preset.fontWeightBold ? 'bold ' : 'normal ';
-        const style = preset.fontStyleItalic ? 'italic ' : '';
-        await document.fonts.load(`${style}${weight}64px "${family}"`);
-      }
+      // style names, so that is the one the export has to have loaded — for
+      // the ratio's style and for every caption that picks its own face.
+      const faces = new Map();
+      (Array.isArray(presets) ? presets : [presets]).forEach(p => {
+        const family = p && (p.fontPostScriptName || p.fontFamily);
+        if (!family) return;
+        const weight = p.fontWeightBold ? 'bold ' : 'normal ';
+        const style = p.fontStyleItalic ? 'italic ' : '';
+        faces.set(`${style}${weight}${family}`, { family, spec: `${style}${weight}64px "${family}"` });
+      });
+      for (const face of faces.values()) await document.fonts.load(face.spec);
       await document.fonts.ready;
-      const missing = (family && !document.fonts.check(`64px "${family}"`)) ? [family] : [];
+      const missing = Array.from(new Set(Array.from(faces.values())
+        .map(f => f.family)
+        .filter(family => !document.fonts.check(`64px "${family}"`))));
       return { ready: missing.length === 0, missing };
     } catch (e) {
       return { ready: true, missing: [] };
@@ -72,7 +78,10 @@ class AlphaExporter {
   async export(opts = {}) {
     this.cancelled = false;
 
-    const fontState = await this.ensureFontsReady(this.player.activePreset);
+    const base = this.player.activePreset;
+    const fontState = await this.ensureFontsReady([base].concat(
+      this.subManager.getSubtitles().filter(sub => sub.style)
+        .map(sub => SubtitleManager.effectiveStyle(sub, base))));
     if (!fontState.ready && opts.onFontWarning) opts.onFontWarning(fontState.missing);
 
     const project = this.player.project;
@@ -122,43 +131,93 @@ class AlphaExporter {
     }
 
     const zipFiles = [];
-    let previousPng = null;
     let framesWritten = 0;
 
+    // Captions hold for seconds at a time, so most frames repeat the one
+    // before. drawSubtitleFrame reports what it drew; only frames that differ
+    // are PNG-encoded and sent, and every repeat becomes a hard link on the
+    // backend, sent in one batch at the end as [source, first, count] runs.
+    const runs = [];
+    let prevSig;          // undefined until the first frame is drawn
+    let lastUnique = -1;
+    let blankIndex = -1;  // first fully transparent frame, reused for every gap
+    const sameSig = (a, b) => a === b || (!!a && !!b && a.sub === b.sub &&
+      a.alpha === b.alpha && a.scale === b.scale && a.word === b.word);
+    const addRepeat = (src, i) => {
+      const run = runs[runs.length - 1];
+      if (run && run[0] === src && run[1] + run[2] === i) run[2]++;
+      else runs.push([src, i, 1]);
+    };
+
+    // Encodes run asynchronously and overlap the drawing of the next frames;
+    // a small cap keeps memory flat on long 4K renders.
+    const inFlight = new Set();
+    const MAX_IN_FLIGHT = 4;
+    let failure = null;
+    const send = (i, blobPromise) => {
+      const p = (async () => {
+        const blob = await blobPromise;
+        if (native) {
+          const b64 = await this.blobToBase64(blob);
+          const res = await window.pywebview.api.write_frame(jobId, i, b64);
+          if (!res || !res.ok) throw new Error((res && res.error) || 'Failed writing frame ' + i);
+        } else {
+          zipFiles[i].data = new Uint8Array(await blob.arrayBuffer());
+        }
+      })();
+      inFlight.add(p);
+      p.catch(e => { failure = failure || e; }).finally(() => inFlight.delete(p));
+      return p;
+    };
+    const pending = [];
+
     try {
+      // WKWebView only finds fonts installed for the user (~/Library/Fonts) from
+      // a canvas in the document. A detached one quietly draws the fallback, so
+      // any face not registered through FontFace would differ from the preview.
+      canvas.style.display = 'none';
+      document.body.appendChild(canvas);
+
+      let lastYield = performance.now();
       for (let i = 0; i < totalFrames; i++) {
         if (this.cancelled) throw new Error('Export cancelled.');
+        if (failure) throw failure;
 
         const t = (startFrame + i) / fps;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        this.player.drawSubtitleFrame(ctx, t, project, this.player.activePreset);
+        const sig = this.player.drawSubtitleFrame(ctx, t, project, this.player.activePreset);
 
-        const dataUrl = canvas.toDataURL('image/png');
-        const isRepeat = dataUrl === previousPng;
-
-        if (native) {
-          let res;
-          if (isRepeat && i > 0) {
-            res = await window.pywebview.api.repeat_frame(jobId, i);
-          } else {
-            res = await window.pywebview.api.write_frame(jobId, i, dataUrl.split(',')[1]);
-          }
-          if (!res || !res.ok) throw new Error((res && res.error) || 'Failed writing frame ' + i);
+        if (i > 0 && sameSig(sig, prevSig)) {
+          addRepeat(lastUnique, i);
+          if (!native) zipFiles.push(zipFiles[lastUnique]);
+        } else if (!sig && blankIndex >= 0) {
+          addRepeat(blankIndex, i);
+          lastUnique = blankIndex;
+          if (!native) zipFiles.push(zipFiles[blankIndex]);
         } else {
-          const bytes = isRepeat && zipFiles.length
-            ? zipFiles[zipFiles.length - 1].data
-            : this.base64ToBytes(dataUrl.split(',')[1]);
-          zipFiles.push({ name: `frame_${String(i).padStart(6, '0')}.png`, data: bytes });
+          if (!native) zipFiles.push({ name: '', data: null });
+          while (inFlight.size >= MAX_IN_FLIGHT) await Promise.race(inFlight);
+          // toBlob snapshots the canvas when called, so drawing can move on.
+          pending.push(send(i, this.canvasToBlob(canvas)));
+          lastUnique = i;
+          if (!sig) blankIndex = i;
         }
-
-        previousPng = dataUrl;
+        prevSig = sig;
         framesWritten++;
 
-        if (opts.onProgress && (i % 5 === 0 || i === totalFrames - 1)) {
-          opts.onProgress(i + 1, totalFrames, 'Rendering frames');
+        const now = performance.now();
+        if (now - lastYield > 100 || i === totalFrames - 1) {
+          if (opts.onProgress) opts.onProgress(i + 1, totalFrames, 'Rendering frames');
+          // Yield so the progress UI can repaint and the window stays responsive.
+          await new Promise(r => setTimeout(r, 0));
+          lastYield = performance.now();
         }
-        // Yield so the progress UI can repaint and the window stays responsive.
-        if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
+      }
+      await Promise.all(pending);
+
+      if (native && runs.length) {
+        const res = await window.pywebview.api.link_frames(jobId, runs);
+        if (!res || !res.ok) throw new Error((res && res.error) || 'Failed writing repeated frames.');
       }
 
       if (native && opts.review) {
@@ -198,14 +257,17 @@ class AlphaExporter {
       }
 
       if (opts.onProgress) opts.onProgress(totalFrames, totalFrames, 'Packaging PNG sequence');
-      zipFiles.push({
+      // Repeats share their source's bytes; each still needs its own name.
+      const named = zipFiles.map((f, i) => ({ name: `frame_${String(i).padStart(6, '0')}.png`, data: f.data }));
+      named.push({
         name: 'ENCODE_TO_PRORES.txt',
         data: new TextEncoder().encode(this.buildFfmpegReadme(fps, profile, project))
       });
-      const zipBlob = this.buildZip(zipFiles);
+      const zipBlob = this.buildZip(named);
       this.downloadBlob(zipBlob, (opts.filename || 'subtitles_alpha').replace(/\.mov$/i, '') + '_png_sequence.zip');
       return { mode: 'png-sequence', frames: framesWritten };
     } finally {
+      canvas.remove();
       if (native && jobId) {
         try { await window.pywebview.api.cleanup_export(jobId); } catch (e) { /* best effort */ }
       }
@@ -236,11 +298,20 @@ class AlphaExporter {
     ].join('\n');
   }
 
-  base64ToBytes(b64) {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes;
+  /** toBlob encodes off the main thread, unlike the synchronous toDataURL. */
+  canvasToBlob(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Could not encode frame.'))), 'image/png');
+    });
+  }
+
+  blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1]);
+      reader.onerror = () => reject(reader.error || new Error('Could not read frame.'));
+      reader.readAsDataURL(blob);
+    });
   }
 
   // --- Minimal ZIP writer (stored / no compression; PNGs are already deflated) ---

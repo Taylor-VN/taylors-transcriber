@@ -170,7 +170,11 @@ class VideoPlayerController {
    */
   setPreset(presetObj) {
     if (!presetObj) return;
-    this.activePreset = { ...this.activePreset, ...presetObj };
+    // Migrated before the merge, so an older style's offset replaces the
+    // current distance rather than being shadowed by it.
+    this.activePreset = PresetParser.migrateShadowOffset({
+      ...this.activePreset, ...PresetParser.migrateShadowOffset(presetObj)
+    });
     this.renderOverlay();
     this.onPresetChangeCallbacks.forEach(cb => cb(this.activePreset));
   }
@@ -421,12 +425,19 @@ class VideoPlayerController {
    * Draws the caption for `currentTime` onto `ctx` at the given project size.
    * Leaves every pixel it does not touch fully transparent — this is exactly
    * what the alpha ProRes export renders, so preview and export cannot drift.
+   *
+   * Returns the frame's signature: everything time-dependent the drawing used
+   * (null for an empty frame). Two frames with equal signatures are identical
+   * pixel for pixel, which lets the export skip re-encoding held captions.
    */
   drawSubtitleFrame(ctx, currentTime, project, preset) {
     const w = project.width;
     const h = project.height;
     const activeSub = this.subManager.getActiveSubtitleAt(currentTime);
-    if (!activeSub || !activeSub.text.trim()) return;
+    if (!activeSub || !activeSub.text.trim()) return null;
+    // A caption can carry its own changes to the style — a different face for
+    // a sign, a move to the top over a lower third.
+    preset = PresetParser.migrateShadowOffset(SubtitleManager.effectiveStyle(activeSub, preset));
 
     let text = activeSub.text.trim();
     if (preset.textUppercase) text = text.toUpperCase();
@@ -509,19 +520,33 @@ class VideoPlayerController {
     }
 
     const shadowEnabled = !!preset.enableShadow;
-    const applyShadow = () => {
-      ctx.shadowColor = preset.shadowColor || 'rgba(0,0,0,0.8)';
+    // Premiere's Shadow: Angle is the direction the shadow is thrown, clockwise
+    // from straight up, so 135 falls down and to the right; Size grows the
+    // shape before it is blurred.
+    const shadowAngle = ((preset.shadowAngle !== undefined ? preset.shadowAngle : 180) * Math.PI) / 180;
+    const shadowDistance = (preset.shadowDistance || 0) * scaleFactor;
+    const shadowSpread = (preset.shadowSize || 0) * scaleFactor;
+    const shadowAlpha = (preset.shadowOpacity !== undefined ? preset.shadowOpacity : 100) / 100;
+
+    // Canvas only casts the shadow of something it draws, and has no spread.
+    // So the shape — fattened by Size — is drawn a long way off the left of
+    // the frame and only its shadow is thrown back on. The shadow offset is in
+    // device pixels and ignores the transform, hence the device-space shift.
+    const drawShadow = (paintShape) => {
+      const throwPx = ctx.canvas.width * 3;
+      const m = ctx.getTransform();
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, -throwPx, 0);
+      ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+      ctx.shadowColor = this.hexToRgba(preset.shadowColor || '#000000', shadowAlpha);
       ctx.shadowBlur = (preset.shadowBlur || 0) * scaleFactor;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = (preset.shadowOffsetY || 0) * scaleFactor;
+      ctx.shadowOffsetX = throwPx + Math.sin(shadowAngle) * shadowDistance;
+      ctx.shadowOffsetY = -Math.cos(shadowAngle) * shadowDistance;
+      ctx.fillStyle = ctx.strokeStyle = '#000000';
+      ctx.lineJoin = 'round';
+      paintShape();
+      ctx.restore();
     };
-    const clearShadow = () => {
-      ctx.shadowColor = 'transparent';
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 0;
-    };
-    clearShadow();
 
     // Background box behind the whole text block (Premiere-style)
     if (preset.enableBgBox) {
@@ -541,11 +566,19 @@ class VideoPlayerController {
 
       const boxY = posY - (totalTextHeight / 2) - padding;
 
-      if (shadowEnabled) applyShadow();
-      ctx.fillStyle = this.hexToRgba(preset.bgBoxColor, (preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 60) / 100);
+      const boxAlpha = (preset.bgBoxOpacity !== undefined ? preset.bgBoxOpacity : 60) / 100;
+      if (shadowEnabled) {
+        drawShadow(() => {
+          // A see-through box casts a lighter shadow, as it did before.
+          ctx.globalAlpha *= boxAlpha;
+          this.drawRoundedRect(ctx, boxX - shadowSpread, boxY - shadowSpread,
+            boxWidth + shadowSpread * 2, boxHeight + shadowSpread * 2, 6 * scaleFactor + shadowSpread);
+          ctx.fill();
+        });
+      }
+      ctx.fillStyle = this.hexToRgba(preset.bgBoxColor, boxAlpha);
       this.drawRoundedRect(ctx, boxX, boxY, boxWidth, boxHeight, 6 * scaleFactor);
       ctx.fill();
-      clearShadow();
     }
 
     const strokeOn = !!preset.enableStroke && (preset.strokeWidth || 0) > 0;
@@ -553,30 +586,35 @@ class VideoPlayerController {
     // path, so double the width and paint it before the fill.
     const strokePx = (preset.strokeWidth || 0) * scaleFactor * 2;
 
+    const lineYAt = (lineIndex) => posY - (totalTextHeight / 2) + (lineIndex * lineHeight) + (lineHeight / 2);
+
+    // Every line's shadow goes down before any text, so a long shadow from
+    // one line never lands on top of the line below it.
+    if (shadowEnabled && !preset.enableBgBox) {
+      const outline = (strokeOn ? strokePx : 0) + shadowSpread * 2;
+      drawShadow(() => {
+        lines.forEach((lineStr, lineIndex) => {
+          const lineY = lineYAt(lineIndex);
+          if (outline > 0) {
+            ctx.lineWidth = outline;
+            ctx.strokeText(lineStr, posX, lineY);
+          }
+          ctx.fillText(lineStr, posX, lineY);
+        });
+      });
+    }
+
     let wordOffset = 0;
     const totalWords = lines.reduce((n, l) => n + l.split(/\s+/).filter(Boolean).length, 0);
+    let activeWordIdx = -1;
+    if (preset.animationPreset === 'karaoke') {
+      const duration = Math.max(0.001, activeSub.end - activeSub.start);
+      const progress = Math.min(1.0, Math.max(0, (currentTime - activeSub.start) / duration));
+      activeWordIdx = Math.min(totalWords - 1, Math.floor(progress * totalWords));
+    }
 
     lines.forEach((lineStr, lineIndex) => {
-      const lineY = posY - (totalTextHeight / 2) + (lineIndex * lineHeight) + (lineHeight / 2);
-
-      // A single shadow pass on the outermost shape, so the shadow is never
-      // doubled up by drawing it for both stroke and fill.
-      if (shadowEnabled && !preset.enableBgBox) {
-        applyShadow();
-        ctx.save();
-        if (strokeOn) {
-          ctx.strokeStyle = preset.strokeColor || '#000000';
-          ctx.lineWidth = strokePx;
-          ctx.lineJoin = 'round';
-          ctx.miterLimit = 2;
-          ctx.strokeText(lineStr, posX, lineY);
-        } else {
-          ctx.fillStyle = preset.fillColor || '#ffffff';
-          ctx.fillText(lineStr, posX, lineY);
-        }
-        ctx.restore();
-        clearShadow();
-      }
+      const lineY = lineYAt(lineIndex);
 
       if (strokeOn) {
         ctx.strokeStyle = preset.strokeColor || '#000000';
@@ -588,7 +626,7 @@ class VideoPlayerController {
 
       const lineWords = lineStr.split(/\s+/).filter(Boolean).length;
       if (preset.animationPreset === 'karaoke') {
-        this.renderKaraokeLine(ctx, lineStr, posX, lineY, activeSub, currentTime, preset, scaleFactor, wordOffset, totalWords);
+        this.renderKaraokeLine(ctx, lineStr, posX, lineY, preset, scaleFactor, wordOffset, activeWordIdx);
       } else {
         ctx.fillStyle = preset.fillColor || '#ffffff';
         ctx.fillText(lineStr, posX, lineY);
@@ -597,13 +635,11 @@ class VideoPlayerController {
     });
 
     ctx.restore();
+    return { sub: activeSub, alpha: animAlpha, scale: animScale, word: activeWordIdx };
   }
 
-  renderKaraokeLine(ctx, lineStr, posX, lineY, activeSub, currentTime, preset, scaleFactor, wordOffset, totalWords) {
+  renderKaraokeLine(ctx, lineStr, posX, lineY, preset, scaleFactor, wordOffset, activeWordIdx) {
     const words = lineStr.split(' ');
-    const duration = Math.max(0.001, activeSub.end - activeSub.start);
-    const progress = Math.min(1.0, Math.max(0, (currentTime - activeSub.start) / duration));
-    const activeWordIdx = Math.min(totalWords - 1, Math.floor(progress * totalWords));
 
     ctx.save();
     let currentX = posX;
