@@ -141,7 +141,7 @@ class Transcriber:
 
         models = registry.list_models()
         installed = [m for m in models if m['installed']]
-        aligner_installed = registry.is_installed(registry.ALIGNER_MODEL['repo'])
+        aligner_installed = registry.entry_installed(registry.ALIGNER_MODEL)
 
         return {
             'ok': True,
@@ -158,6 +158,8 @@ class Transcriber:
             'aligner': dict(registry.ALIGNER_MODEL,
                             installed=aligner_installed,
                             available=engines_mod.ForcedAligner().available()),
+            # Every backend this machine can run (Qwen3 + MMS on Apple Silicon).
+            'aligners': [registry.describe_extra(m) for m in registry.ALIGNER_MODELS],
             'diarizer': diarize.describe(),
             'recommended': registry.recommended('accuracy'),
             'free_disk': registry.free_disk_bytes(),
@@ -171,7 +173,8 @@ class Transcriber:
     def list_models(self):
         return {'ok': True, 'models': registry.list_models(),
                 'aligner': dict(registry.ALIGNER_MODEL,
-                                installed=registry.is_installed(registry.ALIGNER_MODEL['repo'])),
+                                installed=registry.entry_installed(registry.ALIGNER_MODEL)),
+                'aligners': [registry.describe_extra(m) for m in registry.ALIGNER_MODELS],
                 'diarizer': diarize.describe()}
 
     # ------------------------------------------------------------------
@@ -190,7 +193,8 @@ class Transcriber:
                 repo, label = model['repo'], model['label']
 
             try:
-                import huggingface_hub  # noqa: F401
+                if not (extra and extra.get('source')):    # torchaudio-fetched weights skip the hub
+                    import huggingface_hub  # noqa: F401
             except ImportError:
                 return {'ok': False,
                         'error': ('huggingface-hub is missing from the app environment. '
@@ -208,8 +212,67 @@ class Transcriber:
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
+    def _install_torchaudio_mms(self, job):
+        """
+        MMS_FA weights are not on the Hugging Face hub: torchaudio downloads them
+        from its own URL into the torch hub cache on first use. Do that here
+        (streamed, so Settings can show progress and cancel) and then load the
+        model once to prove the file is good.
+        """
+        import urllib.request
+        try:
+            from torchaudio.pipelines import MMS_FA
+        except Exception:
+            raise RuntimeError('PyTorch + torchaudio is not installed. Install that '
+                               'runtime from Settings first.')
+        dest = registry.torch_hub_checkpoint_path()
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if not registry.entry_installed(registry.MMS_ALIGNER_MODEL):
+            part = dest + '.part'
+            try:
+                with urllib.request.urlopen(MMS_FA._path, timeout=60) as resp, open(part, 'wb') as out:
+                    job.total = int(resp.headers.get('Content-Length') or 0)
+                    while True:
+                        block = resp.read(1 << 20)
+                        if not block:
+                            break
+                        if job.cancelled:
+                            return False
+                        out.write(block)
+                        job.downloaded += len(block)
+                        if job.total:
+                            job.progress = min(0.95, job.downloaded / job.total)
+                            job.message = (f'Downloading… {job.downloaded // 1048576} / '
+                                           f'{job.total // 1048576} MB')
+                os.replace(part, dest)
+            finally:
+                if os.path.exists(part):
+                    os.remove(part)
+        job.message = 'Verifying…'
+        try:
+            MMS_FA.get_model()          # reads the cached file; raises if it is corrupt
+        except Exception:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            raise
+        return True
+
     def _run_install(self, job):
         try:
+            extra = registry.EXTRA_MODELS.get(job.model_id)
+            if extra and extra.get('source') == registry.SOURCE_TORCHAUDIO_MMS:
+                finished = self._install_torchaudio_mms(job)
+                if not finished or job.cancelled:
+                    job.state = 'cancelled'
+                    job.message = 'Cancelled.'
+                    return
+                job.progress = 1.0
+                job.state = 'done'
+                job.message = 'Installed.'
+                return
+
             from huggingface_hub import snapshot_download
             from tqdm.auto import tqdm as base_tqdm
 
@@ -261,6 +324,13 @@ class Transcriber:
     def remove_model(self, model_id):
         try:
             extra = registry.EXTRA_MODELS.get(model_id)
+            if extra and extra.get('source'):
+                path = registry.entry_cache_path(extra)
+                if not path or not os.path.isfile(path):
+                    return {'ok': False, 'error': 'That model is not installed.'}
+                freed = os.path.getsize(path)
+                os.remove(path)
+                return {'ok': True, 'freed': freed}
             if extra:
                 repo = extra['repo']
             else:
@@ -596,15 +666,25 @@ class Transcriber:
                 job.message = 'Aligning word timings…'
                 aligner = engines_mod.ForcedAligner()
                 aligned = aligner.align(job.audio_path, text,
-                                        language=raw.get('language'), progress_cb=report)
+                                        language=raw.get('language'), progress_cb=report,
+                                        segments=raw.get('segments'))
                 if aligned:
                     words = aligned
                     alignment_used = True
+                    if aligner.distributed_windows:
+                        job.notes.append(
+                            f'{aligner.distributed_windows} passage(s) could not be aligned and '
+                            'have evenly spread word timings.')
                 elif not words:
+                    if not aligner.available():
+                        raise RuntimeError(
+                            'This model reports no word timings, and the forced aligner is not '
+                            'installed. Install it from Settings (the Qwen3 aligner on Apple '
+                            'Silicon, or PyTorch + torchaudio), or pick a model that provides '
+                            'its own timings, such as Whisper or Parakeet.')
                     raise RuntimeError(
-                        'This model reports no word timings, and forced alignment is unavailable. '
-                        'Install the aligner from Settings (needs torch + torchaudio), or pick a '
-                        'model that provides its own timings, such as Whisper or Parakeet.')
+                        'This model reports no word timings, and forced alignment failed: '
+                        f'{aligner.last_error or "unknown error"}')
 
             # Drop words the detector places in silence. These are almost always
             # hallucinated lines over music or room tone.
