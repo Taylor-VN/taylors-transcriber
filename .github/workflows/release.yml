@@ -39,8 +39,10 @@ jobs:
 
   macos:
     needs: check-version
-    # macos-14 and later are Apple Silicon, which is what this DMG targets.
-    runs-on: macos-14
+    # Apple Silicon runner, which is what this DMG targets. GitHub retires old
+    # macOS images periodically ("configuration ... is not supported"), so
+    # bump this when that happens.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
