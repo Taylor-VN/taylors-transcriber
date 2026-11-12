@@ -435,11 +435,22 @@ class VideoPlayerController {
     const h = project.height;
     const activeSub = this.subManager.getActiveSubtitleAt(currentTime);
     if (!activeSub || !activeSub.text.trim()) return null;
-    // A caption can carry its own changes to the style — a different face for
-    // a sign, a move to the top over a lower third.
-    preset = PresetParser.migrateShadowOffset(SubtitleManager.effectiveStyle(activeSub, preset));
+    // Three layers: the ratio's style, the speaker's changes to it (a colour
+    // per person), and the caption's own (a different face for a sign, a move
+    // to the top over a lower third).
+    preset = PresetParser.migrateShadowOffset(this.subManager.styleFor(activeSub, preset));
 
+    // The speaker's name goes into the text itself, before wrapping, so it
+    // wraps, boxes, strokes and casts a shadow exactly as the words do. Only
+    // the fill pass needs to know which words are the name, to colour them.
     let text = activeSub.text.trim();
+    let labelWords = 0;
+    const label = this.subManager.speakerLabelFor(activeSub, preset);
+    if (label) {
+      const name = preset.speakerLabel === 'prefix' ? `${label}:` : label;
+      text = preset.speakerLabel === 'prefix' ? `${name} ${text}` : `${name}\n${text}`;
+      labelWords = name.split(/\s+/).filter(Boolean).length;
+    }
     if (preset.textUppercase) text = text.toUpperCase();
 
     const scaleFactor = h / REFERENCE_HEIGHT;
@@ -608,10 +619,16 @@ class VideoPlayerController {
     const totalWords = lines.reduce((n, l) => n + l.split(/\s+/).filter(Boolean).length, 0);
     let activeWordIdx = -1;
     if (preset.animationPreset === 'karaoke') {
+      // The highlight walks the spoken words only; the name is not read out.
+      const spoken = Math.max(1, totalWords - labelWords);
       const duration = Math.max(0.001, activeSub.end - activeSub.start);
       const progress = Math.min(1.0, Math.max(0, (currentTime - activeSub.start) / duration));
-      activeWordIdx = Math.min(totalWords - 1, Math.floor(progress * totalWords));
+      activeWordIdx = labelWords + Math.min(spoken - 1, Math.floor(progress * spoken));
     }
+    const fillColor = preset.fillColor || '#ffffff';
+    const labelColor = labelWords && preset.speakerLabelColor
+      && preset.speakerLabelColor.toLowerCase() !== fillColor.toLowerCase()
+      ? preset.speakerLabelColor : null;
 
     lines.forEach((lineStr, lineIndex) => {
       const lineY = lineYAt(lineIndex);
@@ -626,9 +643,12 @@ class VideoPlayerController {
 
       const lineWords = lineStr.split(/\s+/).filter(Boolean).length;
       if (preset.animationPreset === 'karaoke') {
-        this.renderKaraokeLine(ctx, lineStr, posX, lineY, preset, scaleFactor, wordOffset, activeWordIdx);
+        this.renderKaraokeLine(ctx, lineStr, posX, lineY, preset, scaleFactor, wordOffset, activeWordIdx,
+          labelWords, labelColor);
+      } else if (labelColor && wordOffset < labelWords) {
+        this.renderLabelledLine(ctx, lineStr, posX, lineY, labelWords - wordOffset, labelColor, fillColor);
       } else {
-        ctx.fillStyle = preset.fillColor || '#ffffff';
+        ctx.fillStyle = fillColor;
         ctx.fillText(lineStr, posX, lineY);
       }
       wordOffset += lineWords;
@@ -638,7 +658,36 @@ class VideoPlayerController {
     return { sub: activeSub, alpha: animAlpha, scale: animScale, word: activeWordIdx };
   }
 
-  renderKaraokeLine(ctx, lineStr, posX, lineY, preset, scaleFactor, wordOffset, activeWordIdx) {
+  /** Left edge of a line drawn at posX under the context's current alignment. */
+  lineStartX(ctx, lineStr, posX) {
+    if (ctx.textAlign === 'center') return posX - (ctx.measureText(lineStr).width / 2);
+    if (ctx.textAlign === 'right') return posX - ctx.measureText(lineStr).width;
+    return posX;
+  }
+
+  /**
+   * A line whose first `nameWords` words are the speaker's name, filled in the
+   * label colour, and the rest in the text colour. Drawn as two runs from the
+   * line's own left edge so the pair lands exactly where the whole line would.
+   */
+  renderLabelledLine(ctx, lineStr, posX, lineY, nameWords, labelColor, fillColor) {
+    const words = lineStr.split(' ');
+    const head = words.slice(0, nameWords).join(' ');
+    const tail = words.slice(nameWords).join(' ');
+    ctx.save();
+    const x = this.lineStartX(ctx, lineStr, posX);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = labelColor;
+    ctx.fillText(head, x, lineY);
+    if (tail) {
+      ctx.fillStyle = fillColor;
+      ctx.fillText(tail, x + ctx.measureText(head + ' ').width, lineY);
+    }
+    ctx.restore();
+  }
+
+  renderKaraokeLine(ctx, lineStr, posX, lineY, preset, scaleFactor, wordOffset, activeWordIdx,
+    labelWords = 0, labelColor = null) {
     const words = lineStr.split(' ');
 
     ctx.save();
@@ -654,7 +703,11 @@ class VideoPlayerController {
     words.forEach((word, wIdx) => {
       const wordStr = word + (wIdx < words.length - 1 ? ' ' : '');
       if (word.trim()) {
-        if (globalIdx === activeWordIdx) {
+        if (globalIdx < labelWords) {
+          ctx.fillStyle = labelColor || preset.fillColor || '#ffffff';
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
+        } else if (globalIdx === activeWordIdx) {
           ctx.fillStyle = preset.karaokeColor || '#00ffff';
           ctx.shadowColor = preset.karaokeColor || '#00ffff';
           ctx.shadowBlur = 12 * scaleFactor;

@@ -391,6 +391,8 @@
         <div class="style-scope" role="group" aria-label="What the style panel edits">
           <button id="styleScopeRatio" class="style-scope-btn active"
                   title="Edit the style every caption in this ratio wears">Ratio</button>
+          <button id="styleScopeSpeaker" class="style-scope-btn" disabled
+                  title="Edit every caption by the selected caption's speaker, in every ratio — select a labelled caption first">Speaker</button>
           <button id="styleScopeCaption" class="style-scope-btn" disabled
                   title="Edit only the selected caption — select one in the list first">This caption</button>
         </div>
@@ -621,6 +623,34 @@
                    title="How far across the frame a line may run before it wraps, as a share of the frame width">
             <span id="textWidthVal" class="range-val">85%</span>
           </div>
+        </div>
+
+        <!-- Speaker Labels: burned in with the caption -->
+        <div class="style-group">
+          <label class="group-label">Speaker Labels</label>
+          <div class="input-row">
+            <span class="input-lbl" title="Burn the speaker's name into the caption">Show</span>
+            <select id="speakerLabel" class="input-select">
+              <option value="none">Off</option>
+              <option value="prefix">Before the text — NAME: …</option>
+              <option value="above">On a line above</option>
+            </select>
+          </div>
+          <div class="input-row margin-top-sm">
+            <span class="input-lbl" title="Name only the first caption of each turn, or every caption">When</span>
+            <select id="speakerLabelWhen" class="input-select">
+              <option value="change">When the speaker changes</option>
+              <option value="always">On every caption</option>
+            </select>
+          </div>
+          <div class="input-row margin-top-sm">
+            <label class="checkbox-label" title="Draw the name in its own colour rather than the text colour">
+              <input type="checkbox" id="speakerLabelColorOn"> Own colour
+            </label>
+            <input type="color" id="speakerLabelColor" value="#ffea00" class="input-color">
+          </div>
+          <p class="modal-hint tight">Names come from the speaker field in the captions list. Switch
+            labels off for one person (a narrator, say) from the Speaker tab above.</p>
         </div>
 
         <!-- Animation Effects -->
@@ -897,7 +927,7 @@
             at every change of speaker and carry a name. Needs the word-timing
             aligner, since speakers are matched to words.
           </p>
-          <div id="diarizerRow" class="model-row"></div>
+          <div id="diarizerRow" class="model-list"></div>
         </div>
 
         <div class="settings-section">

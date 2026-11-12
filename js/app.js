@@ -109,6 +109,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // wears ('ratio'), or the selected caption's own changes on top of it.
   let styleScope = 'ratio';
   let styleScopeSubId = null;
+  // The speaker whose style the panel is editing, in the 'speaker' scope.
+  let styleScopeSpeaker = null;
 
   // Where the project is parked between launches. Declared up here because
   // bootProject() runs long before the project section below is reached, and a
@@ -1031,6 +1033,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             <button class="caption-delete-btn" title="Delete Line">✕</button>
           </div>
           ${(anySpeakers || sub.id === selectedId) ? `<input type="text" class="caption-speaker" value="${escapeHtml(sub.speaker || '')}"
+             style="${speakerSwatch(sub.speaker) ? `border-left-color: ${escapeHtml(speakerSwatch(sub.speaker))}` : ''}"
              placeholder="Speaker" title="Who says this line. Renaming updates every line by this person.">` : ''}
           <textarea class="caption-textarea" placeholder="Caption text..." spellcheck="true">${escapeHtml(sub.text)}</textarea>
           <div class="caption-notes">${notesHtml(sub, issues)}</div>
@@ -1095,6 +1098,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Speaker — renaming one line renames the person everywhere, since
         // "Speaker 2" is a placeholder for someone with a real name, and fixing
         // it eighty times by hand is not an edit anyone would choose to make.
+        // "Everywhere" includes the other ratios: they were cut from the same
+        // transcript, so the same person carries the same placeholder there.
         const speakerInput = itemEl.querySelector('.caption-speaker');
         if (speakerInput) {
           speakerInput.addEventListener('change', () => {
@@ -1106,6 +1111,27 @@ document.addEventListener('DOMContentLoaded', async () => {
               ? subManager.getSubtitles().filter(s => s.speaker === previous)
               : [sub];
             affected.forEach(s => subManager.updateSubtitle(s.id, { speaker: name }, { silent: true }));
+
+            // An unlabelled line is just this one caption, which has no
+            // counterpart to find in the other ratios.
+            const film = project.getActive();
+            if (previous && film) {
+              RATIO_IDS.forEach(rid => {
+                if (rid === film.activeRatio || !film.ratios[rid]) return;
+                film.ratios[rid].subtitles.forEach(s => {
+                  if (s.speaker === previous) s.speaker = name;
+                });
+              });
+              // The person keeps their look under the new name. Renaming onto
+              // someone who already has a style merges the two people, and
+              // the existing style is theirs to keep.
+              const styles = film.speakerStyles || {};
+              if (styles[previous]) {
+                if (name && !styles[name]) styles[name] = styles[previous];
+                delete styles[previous];
+              }
+              if (styleScopeSpeaker === previous) styleScopeSpeaker = name || null;
+            }
             renderCaptionsList(subManager.getSubtitles(), subManager.selectedId);
             project.markDirty();
             scheduleAutosave();
@@ -1176,12 +1202,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     const presetSelect = document.getElementById('presetSelect');
 
     presetSelect.addEventListener('change', (e) => {
-      const presetObj = presetParser.getPreset(e.target.value);
+      // Choosing a look leaves speaker labels as they were, unless the preset
+      // itself says otherwise — one saved from the library with labels on.
+      const picked = presetParser.getPreset(e.target.value);
+      const shown = panelStyle();
+      const presetObj = picked.speakerLabel !== undefined ? picked : {
+        ...picked,
+        speakerLabel: shown.speakerLabel,
+        speakerLabelWhen: shown.speakerLabelWhen,
+        speakerLabelColor: shown.speakerLabelColor
+      };
+      if (styleScope === 'speaker' && styleScopeSpeaker) {
+        // Likewise for a speaker: only what differs from the ratio is kept.
+        setSpeakerStyle(styleScopeSpeaker, styleOverrides(presetParser.normalizePreset(presetObj)));
+        return;
+      }
       const sub = styleScope === 'caption' ? selectedCaption() : null;
       if (sub) {
         // A preset picked for one caption becomes that caption's changes —
         // whatever it shares with the ratio style stays shared.
-        setCaptionStyle(sub, styleOverrides(presetParser.normalizePreset(presetObj)));
+        setCaptionStyle(sub, styleOverrides(presetParser.normalizePreset(presetObj), captionBase(sub)));
         return;
       }
       applyPresetToUI(presetObj);
@@ -1190,7 +1230,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('styleScopeRatio').addEventListener('click', () => setStyleScope('ratio'));
     document.getElementById('styleScopeCaption').addEventListener('click', () => setStyleScope('caption'));
+    document.getElementById('styleScopeSpeaker').addEventListener('click', () => setStyleScope('speaker'));
     document.getElementById('btnClearCaptionStyle').addEventListener('click', () => {
+      if (styleScope === 'speaker' && styleScopeSpeaker) {
+        setSpeakerStyle(styleScopeSpeaker, undefined);
+        return;
+      }
       const sub = selectedCaption();
       if (sub) setCaptionStyle(sub, undefined);
     });
@@ -1203,13 +1248,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!sub) { setStyleScope('ratio'); return; }
         if (sub.id !== styleScopeSubId) {
           styleScopeSubId = sub.id;
-          applyPresetToUI(SubtitleManager.effectiveStyle(sub, playerController.activePreset));
+          applyPresetToUI(subManager.styleFor(sub, playerController.activePreset));
+        }
+      } else if (styleScope === 'speaker') {
+        // Follows the selection to the next person; a caption with nobody on
+        // it has no speaker to edit, so the panel drops back to the ratio.
+        if (!sub || !sub.speaker) { setStyleScope('ratio'); return; }
+        if (sub.speaker !== styleScopeSpeaker) {
+          styleScopeSpeaker = sub.speaker;
+          applyPresetToUI(subManager.speakerStyle(sub.speaker, playerController.activePreset));
         }
       }
       refreshStyleScopeUI();
     });
 
     document.getElementById('btnResetStyle').addEventListener('click', () => {
+      if (styleScope === 'speaker' && styleScopeSpeaker) {
+        setSpeakerStyle(styleScopeSpeaker, undefined);
+        toast(`${styleScopeSpeaker} is back on the ratio style.`, 'success');
+        return;
+      }
       const sub = styleScope === 'caption' ? selectedCaption() : null;
       if (sub) {
         setCaptionStyle(sub, undefined);
@@ -1224,11 +1282,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('btnSaveCustomPreset').addEventListener('click', () => {
       const sub = styleScope === 'caption' ? selectedCaption() : null;
-      // From a caption, save the look it is actually drawn in, and leave the
-      // ratio's style where it is.
-      const source = sub
-        ? SubtitleManager.effectiveStyle(sub, playerController.activePreset)
-        : playerController.activePreset;
+      const fromSpeaker = styleScope === 'speaker' && !!styleScopeSpeaker;
+      // From a caption or a speaker, save the look it is actually drawn in,
+      // and leave the ratio's style where it is.
+      const source = panelStyle();
       const suggested = source.name || 'My Premiere Style';
       const name = prompt('Enter a name for this preset:', suggested);
       if (!name) return;
@@ -1236,7 +1293,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // iterating on a style does not leave six near-identical presets behind.
       const entry = presetLibrary.save({ ...source, name }, { source: 'custom' });
       refreshPresetLibraryUI(entry.id);
-      if (!sub) playerController.applyPreset(entry);
+      if (!sub && !fromSpeaker) playerController.applyPreset(entry);
       toast(presetLibrary.lastWriteOk
         ? `Saved "${entry.name}" to your preset library.`
         : `Saved "${entry.name}" for this session — this browser refused to store the library.`,
@@ -1270,7 +1327,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       textWidth: document.getElementById('textWidth'),
       offsetX: document.getElementById('offsetX'),
       offsetY: document.getElementById('offsetY'),
-      animationPreset: document.getElementById('animationPreset')
+      animationPreset: document.getElementById('animationPreset'),
+      speakerLabel: document.getElementById('speakerLabel'),
+      speakerLabelWhen: document.getElementById('speakerLabelWhen'),
+      speakerLabelColorOn: document.getElementById('speakerLabelColorOn'),
+      speakerLabelColor: document.getElementById('speakerLabelColor')
     };
 
     // Premiere's Position pair is a scrubber, so this one is too.
@@ -1310,10 +1371,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     function readAndApplyInspectorChanges() {
       const activeAlignBtn = document.querySelector('.align-btn.active');
       const sub = styleScope === 'caption' ? selectedCaption() : null;
-      // The style on screen in the panel: the caption's own when editing one.
-      const current = sub
-        ? SubtitleManager.effectiveStyle(sub, playerController.activePreset)
-        : playerController.activePreset;
+      const speaker = styleScope === 'speaker' ? styleScopeSpeaker : null;
+      // The style on screen in the panel: the caption's or speaker's own when
+      // editing one.
+      const current = panelStyle();
       const values = {
         name: playerController.activePreset.name || 'Custom Style',
         fontFamily: inputs.fontFamily.value,
@@ -1347,10 +1408,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         textWidth: parseInt(inputs.textWidth.value, 10) || 85,
         offsetX: parseInt(inputs.offsetX.value, 10) || 0,
         offsetY: parseInt(inputs.offsetY.value, 10) || 0,
-        animationPreset: inputs.animationPreset.value
+        animationPreset: inputs.animationPreset.value,
+        speakerLabel: inputs.speakerLabel.value,
+        speakerLabelWhen: inputs.speakerLabelWhen.value,
+        speakerLabelColor: inputs.speakerLabelColorOn.checked ? inputs.speakerLabelColor.value : ''
       };
+      inputs.speakerLabelColor.disabled = !inputs.speakerLabelColorOn.checked;
 
-      if (sub) setCaptionStyle(sub, styleOverrides(values), { keepPanel: true });
+      if (speaker) setSpeakerStyle(speaker, styleOverrides(values), { keepPanel: true });
+      else if (sub) setCaptionStyle(sub, styleOverrides(values, captionBase(sub)), { keepPanel: true });
       else playerController.setPreset(values);
     }
   }
@@ -1361,16 +1427,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     return id ? subManager.getSubtitles().find(s => s.id === id) || null : null;
   }
 
+  /** The style the panel shows: the ratio's, a speaker's, or one caption's. */
+  function panelStyle() {
+    const preset = playerController.activePreset;
+    const sub = selectedCaption();
+    if (styleScope === 'caption' && sub) return subManager.styleFor(sub, preset);
+    if (styleScope === 'speaker' && styleScopeSpeaker) {
+      return subManager.speakerStyle(styleScopeSpeaker, preset);
+    }
+    return preset;
+  }
+
+  /** What a caption's own changes are measured against: ratio plus speaker. */
+  function captionBase(sub) {
+    return subManager.speakerStyle(sub && sub.speaker, playerController.activePreset);
+  }
+
   /**
-   * The settings in `values` that differ from the ratio's style. Only those
-   * are kept on the caption, so a later change to the ratio style still
-   * reaches every setting the caption did not change itself.
+   * The settings in `values` that differ from `against` — the ratio's style,
+   * or for a caption its speaker's. Only those are kept, so a later change to
+   * the layer underneath still reaches every setting not changed here.
    */
-  function styleOverrides(values) {
+  function styleOverrides(values, against) {
     // Normalised underneath so a field an older style never spelled out
     // compares against its default rather than reading as a change.
     const active = playerController.activePreset;
-    const base = { ...presetParser.normalizePreset(active), ...active };
+    const base = { ...presetParser.normalizePreset(active), ...(against || active) };
     const out = {};
     Object.keys(values).forEach(key => {
       if (key === 'name' || key === 'id' || key === 'premiere') return;
@@ -1390,32 +1472,84 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Re-read rather than trust the panel: a reset or a preset choice changes
     // every field at once, and the panel has to show what will be drawn.
     if (!opts.keepPanel) {
-      applyPresetToUI(SubtitleManager.effectiveStyle(selectedCaption() || sub, playerController.activePreset));
+      applyPresetToUI(subManager.styleFor(selectedCaption() || sub, playerController.activePreset));
     }
     playerController.renderOverlay();
   }
 
+  /**
+   * Writes one speaker's changes to the ratio style onto the film. The film
+   * owns them, so the same person looks the same in every ratio; the
+   * subtitle manager holds a reference, so drawing picks them up at once.
+   */
+  function setSpeakerStyle(name, overrides, opts = {}) {
+    const film = project.getActive();
+    if (!film || !name) return;
+    if (!film.speakerStyles) film.speakerStyles = {};
+    const clean = SubtitleManager.cleanStyle(overrides);
+    if (clean) film.speakerStyles[name] = clean;
+    else delete film.speakerStyles[name];
+    subManager.speakerStyles = film.speakerStyles;
+
+    if (!opts.keepPanel) {
+      applyPresetToUI(subManager.speakerStyle(name, playerController.activePreset));
+    }
+    playerController.renderOverlay();
+    updateSpeakerSwatches();
+    refreshStyleScopeUI();
+    project.markDirty();
+    scheduleAutosave();
+  }
+
+  /**
+   * The colour mark beside each speaker field in the captions list. Updated
+   * in place rather than by re-rendering the list, since a colour picker fires
+   * on every step of a drag.
+   */
+  function speakerSwatch(name) {
+    const own = name && subManager.speakerStyles ? subManager.speakerStyles[name] : null;
+    return own && own.fillColor ? own.fillColor : '';
+  }
+
+  function updateSpeakerSwatches() {
+    document.querySelectorAll('.caption-speaker').forEach(input => {
+      input.style.borderLeftColor = speakerSwatch(input.value.trim()) || '';
+    });
+  }
+
   function setStyleScope(scope) {
     const sub = selectedCaption();
-    styleScope = scope === 'caption' && sub ? 'caption' : 'ratio';
+    if (scope === 'caption' && sub) styleScope = 'caption';
+    else if (scope === 'speaker' && sub && sub.speaker) styleScope = 'speaker';
+    else styleScope = 'ratio';
     styleScopeSubId = styleScope === 'caption' ? sub.id : null;
-    applyPresetToUI(styleScope === 'caption'
-      ? SubtitleManager.effectiveStyle(sub, playerController.activePreset)
-      : playerController.activePreset);
+    styleScopeSpeaker = styleScope === 'speaker' ? sub.speaker : null;
+    applyPresetToUI(panelStyle());
     refreshStyleScopeUI();
   }
 
   function refreshStyleScopeUI() {
     const sub = selectedCaption();
     const editingCaption = styleScope === 'caption' && !!sub;
-    document.getElementById('styleScopeRatio').classList.toggle('active', !editingCaption);
+    const editingSpeaker = styleScope === 'speaker' && !!styleScopeSpeaker;
+    document.getElementById('styleScopeRatio').classList.toggle('active', !editingCaption && !editingSpeaker);
     const captionBtn = document.getElementById('styleScopeCaption');
     captionBtn.classList.toggle('active', editingCaption);
     captionBtn.disabled = !sub;
+    const speakerBtn = document.getElementById('styleScopeSpeaker');
+    speakerBtn.classList.toggle('active', editingSpeaker);
+    speakerBtn.disabled = !(sub && sub.speaker);
 
     const bar = document.getElementById('captionStyleBar');
-    bar.classList.toggle('hidden', !editingCaption);
-    if (editingCaption) {
+    bar.classList.toggle('hidden', !editingCaption && !editingSpeaker);
+    if (editingSpeaker) {
+      const own = subManager.speakerStyles && subManager.speakerStyles[styleScopeSpeaker];
+      const count = subManager.getSubtitles().filter(s => s.speaker === styleScopeSpeaker).length;
+      document.getElementById('captionStyleLabel').textContent = own
+        ? `${styleScopeSpeaker} — own style: ${describeStyleOverrides(own)}`
+        : `Editing ${styleScopeSpeaker} — ${count} caption${count === 1 ? '' : 's'}, every ratio`;
+      document.getElementById('btnClearCaptionStyle').disabled = !own;
+    } else if (editingCaption) {
       const index = subManager.getSubtitles().indexOf(sub) + 1;
       document.getElementById('captionStyleLabel').textContent = sub.style
         ? `Caption #${index} — own style: ${describeStyleOverrides(sub.style)}`
@@ -1433,7 +1567,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     enableShadow: 'shadow', shadowColor: 'shadow', shadowOpacity: 'shadow', shadowAngle: 'shadow',
     shadowDistance: 'shadow', shadowSize: 'shadow', shadowBlur: 'shadow',
     align: 'position', bottomMargin: 'position', offsetX: 'position', offsetY: 'position',
-    textWidth: 'line width', animationPreset: 'animation'
+    textWidth: 'line width', animationPreset: 'animation',
+    speakerLabel: 'label', speakerLabelWhen: 'label', speakerLabelColor: 'label colour'
   };
 
   function describeStyleOverrides(style) {
@@ -1656,6 +1791,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     set('offsetX', num('offsetX'));
     set('offsetY', num('offsetY'));
     set('animationPreset', preset.animationPreset || 'none');
+    set('speakerLabel', preset.speakerLabel || 'none');
+    set('speakerLabelWhen', preset.speakerLabelWhen || 'change');
+    check('speakerLabelColorOn', !!preset.speakerLabelColor);
+    if (preset.speakerLabelColor) set('speakerLabelColor', preset.speakerLabelColor);
+    const labelColor = document.getElementById('speakerLabelColor');
+    if (labelColor) labelColor.disabled = !preset.speakerLabelColor;
 
     document.getElementById('letterSpacingVal').textContent = `${num('letterSpacing')}`;
     document.getElementById('lineHeightVal').textContent = `${num('lineHeight')}`;
@@ -2313,28 +2454,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyModelRules = applyModelLanguageRules;
 
     /**
-     * Speaker separation needs two things that install separately — the
-     * SpeechBrain runtime and the voice model — so the control is switched off
-     * and says which one is missing, rather than being offered and then quietly
-     * returning unlabelled captions.
+     * Speaker separation needs two things that install separately — a runtime
+     * and a speaker model — so the control is switched off and says which one
+     * is missing, rather than being offered and then quietly returning
+     * unlabelled captions. The advice names the best model for this machine;
+     * an older setup with only the fallback model still counts as ready.
      */
     function updateDiarizeNote(probe) {
       const d = probe && probe.diarizer;
-      const ready = !!(d && d.available && d.installed);
+      const ready = !!(d && (d.ready !== undefined ? d.ready : (d.available && d.installed)));
 
       diarizeToggle.disabled = !ready;
       if (!ready) diarizeToggle.checked = false;
       speakerCount.disabled = !diarizeToggle.checked;
 
-      if (ready) {
+      // Ready on the fallback while the better model is one download away.
+      const upgrade = ready && d.backend && d.backend !== d.id;
+      if (ready && !upgrade) {
         diarizeNote.classList.add('hidden');
         return;
       }
+      const runtime = (d && d.package) || 'speaker';
       diarizeNote.textContent = !d
         ? 'Speaker separation is unavailable on this backend.'
-        : (!d.available
-            ? 'Install the SpeechBrain runtime in Settings → Speech Runtimes to separate speakers.'
-            : 'Install the speaker model in Settings → Speaker Separation to separate speakers.');
+        : upgrade
+          ? `For more accurate speaker labels, install ${d.label.replace(/ \(.*\)$/, '')} in Settings → Speaker Separation`
+            + (d.available ? '.' : ` (with the ${runtime} runtime).`)
+          : (!d.available
+              ? `Install the ${runtime} runtime in Settings → Speech Runtimes to separate speakers.`
+              : 'Install the speaker model in Settings → Speaker Separation to separate speakers.');
       diarizeNote.classList.remove('hidden');
     }
 
@@ -2678,6 +2826,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return {
       content: project.getFilms().map(f => ({
         id: f.id,
+        speakerStyles: f.speakerStyles || {},
         ratios: RATIO_IDS.reduce((out, rid) => {
           out[rid] = { subtitles: f.ratios[rid].subtitles, preset: f.ratios[rid].preset };
           return out;
@@ -2696,6 +2845,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     content.forEach(saved => {
       const film = project.getFilm(saved.id);
       if (!film) return;
+      film.speakerStyles = SubtitleManager.cleanSpeakerStyles(saved.speakerStyles);
       RATIO_IDS.forEach(rid => {
         if (!saved.ratios[rid] || !film.ratios[rid]) return;
         film.ratios[rid].subtitles = saved.ratios[rid].subtitles.map(sub => ({ ...sub }));
@@ -2950,6 +3100,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyPresetToUI(ratio.preset);
     syncPresetSelect(ratio.preset);
 
+    if (!film.speakerStyles) film.speakerStyles = {};
+    subManager.speakerStyles = film.speakerStyles;
     subManager.selectedId = null;
     subManager.setSubtitles(ratio.subtitles);
     if (ratio.selectedId && subManager.getSubtitles().some(sub => sub.id === ratio.selectedId)) {

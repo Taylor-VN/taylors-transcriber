@@ -266,26 +266,34 @@ class SettingsController {
   }
 
   /**
-   * The speaker model is small, but useless without SpeechBrain — so the row
-   * says so rather than offering a download that cannot run.
+   * One row per speaker model this machine can run, best first. Each is
+   * useless without its runtime, so a row says so rather than offering a
+   * download that cannot run.
    */
   renderDiarizer() {
-    const row = document.getElementById('diarizerRow');
-    if (!row) return;
-    if (!this.diarizer) { row.innerHTML = ''; return; }
-    row.className = `model-row${this.diarizer.installed ? ' installed' : ''}`
-      + (this.diarizer.available ? '' : ' unavailable');
-    row.innerHTML = this.modelRowHtml({
-      id: this.diarizer.id,
-      label: this.diarizer.label,
-      notes: this.diarizer.notes,
-      size_gb: this.diarizer.size_gb,
-      installed: this.diarizer.installed,
-      engine_available: this.diarizer.available !== false,
-      engine_package: 'speechbrain',
-      badges: [{ cls: 'timing', text: 'speaker labels' }]
+    const container = document.getElementById('diarizerRow');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!this.diarizer) return;
+    const models = this.diarizer.models || [this.diarizer];
+    models.forEach((m, i) => {
+      const row = document.createElement('div');
+      row.className = `model-row${m.installed ? ' installed' : ''}`
+        + (m.available ? '' : ' unavailable');
+      row.innerHTML = this.modelRowHtml({
+        id: m.id,
+        label: m.label,
+        notes: m.notes,
+        size_gb: m.size_gb,
+        installed: m.installed,
+        engine_available: m.available !== false,
+        engine_package: m.package || 'speechbrain',
+        badges: [{ cls: 'timing', text: 'speaker labels' }]
+          .concat(models.length > 1 && i === 0 ? [{ cls: 'timing', text: 'recommended' }] : [])
+      });
+      container.appendChild(row);
+      this.wireRow(row, m.id);
     });
-    this.wireRow(row, this.diarizer.id);
   }
 
   renderModels() {

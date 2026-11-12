@@ -48,6 +48,9 @@ class SubtitleManager {
     this.setFrameRate(rateId);
     this.selectedId = null;
     this.listeners = [];
+    // The film's per-speaker style changes, keyed by speaker name. Owned by the
+    // film (one look per person in every ratio); this is a reference to it.
+    this.speakerStyles = {};
   }
 
   onChange(callback) {
@@ -229,6 +232,50 @@ class SubtitleManager {
   /** The style a caption is drawn in: the ratio's, with its own changes on top. */
   static effectiveStyle(sub, preset) {
     return sub && sub.style ? { ...preset, ...sub.style } : preset;
+  }
+
+  /**
+   * A speaker's style: the ratio's, with that person's changes on top. The
+   * middle layer of three — ratio, speaker, caption — so a caption can still
+   * be moved over a lower third without losing its speaker's colour.
+   */
+  speakerStyle(name, preset) {
+    const own = name && this.speakerStyles ? this.speakerStyles[name] : null;
+    return own ? { ...preset, ...own } : preset;
+  }
+
+  /** The style a caption is drawn in: ratio, then its speaker, then its own. */
+  styleFor(sub, preset) {
+    return SubtitleManager.effectiveStyle(sub, this.speakerStyle(sub && sub.speaker, preset));
+  }
+
+  /**
+   * The name to burn in with a caption, or '' for none.
+   *
+   * With `speakerLabelWhen: 'change'` only the first caption of a turn is
+   * named: the caption before it (in time) belongs to someone else, or there
+   * is none. That is the broadcast convention — a name marks a new voice, and
+   * repeating it on every line of a long answer is noise.
+   */
+  speakerLabelFor(sub, style) {
+    if (!sub || !sub.speaker || !style || !style.speakerLabel || style.speakerLabel === 'none') return '';
+    if (style.speakerLabelWhen !== 'always') {
+      const index = this.subtitles.indexOf(sub);
+      const prev = index > 0 ? this.subtitles[index - 1] : null;
+      if (prev && prev.speaker === sub.speaker) return '';
+    }
+    return sub.speaker;
+  }
+
+  /** Drops empty entries so a cleared speaker style leaves nothing behind. */
+  static cleanSpeakerStyles(styles) {
+    const out = {};
+    if (!styles || typeof styles !== 'object') return out;
+    Object.keys(styles).forEach(name => {
+      const style = SubtitleManager.cleanStyle(styles[name]);
+      if (name && style) out[name] = style;
+    });
+    return out;
   }
 
   /** Captions carrying at least one word the model was unsure about. */
