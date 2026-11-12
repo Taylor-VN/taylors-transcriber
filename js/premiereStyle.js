@@ -285,11 +285,14 @@ class PremiereStyleDecoder {
       shadow: {
         visible: fb.bool(para, PARA.SHADOW_VISIBLE, false),
         color: readColor(fb, fb.indirect(para, PARA.SHADOW_COLOR)) || '#000000',
-        opacity: fb.float(para, PARA.SHADOW_OPACITY, 100),
-        angle: fb.float(para, PARA.SHADOW_ANGLE, 0),
-        distance: fb.float(para, PARA.SHADOW_OFFSET, 0),
+        // FlatBuffers leaves out a field that equals its schema default, and
+        // these defaults are Premiere's own (75%, 135°, 7, 0, 40): a style that
+        // keeps the default angle carries no angle field at all.
+        opacity: fb.float(para, PARA.SHADOW_OPACITY, 75),
+        angle: fb.float(para, PARA.SHADOW_ANGLE, 135),
+        distance: fb.float(para, PARA.SHADOW_OFFSET, 7),
         size: fb.float(para, PARA.SHADOW_SIZE, 0),
-        blur: fb.float(para, PARA.SHADOW_BLUR, 0)
+        blur: fb.float(para, PARA.SHADOW_BLUR, 40)
       },
       background: {
         visible: fb.bool(para, PARA.BACK_VISIBLE, false),

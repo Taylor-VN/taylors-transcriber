@@ -388,6 +388,18 @@
     <section class="panel panel-right" id="panelInspector">
       <div class="panel-header">
         <div class="panel-title">Style</div>
+        <div class="style-scope" role="group" aria-label="What the style panel edits">
+          <button id="styleScopeRatio" class="style-scope-btn active"
+                  title="Edit the style every caption in this ratio wears">Ratio</button>
+          <button id="styleScopeCaption" class="style-scope-btn" disabled
+                  title="Edit only the selected caption — select one in the list first">This caption</button>
+        </div>
+      </div>
+
+      <div id="captionStyleBar" class="caption-style-bar hidden">
+        <span id="captionStyleLabel">Editing caption #1 only</span>
+        <button id="btnClearCaptionStyle" class="btn-xs btn-outline"
+                title="Drop this caption's own settings so it wears the ratio style again">Use ratio style</button>
       </div>
 
       <div class="inspector-scroll">
@@ -504,13 +516,31 @@
             </label>
             <input type="color" id="shadowColor" value="#000000" class="input-color">
           </div>
+          <!-- Premiere's Shadow controls, in Premiere's order -->
           <div class="input-row">
-            <span class="input-lbl">Blur</span>
-            <input type="range" id="shadowBlur" min="0" max="30" value="8" class="input-range">
+            <span class="input-lbl">Opacity</span>
+            <input type="range" id="shadowOpacity" min="0" max="100" value="100" class="input-range">
+            <span id="shadowOpacityVal" class="range-val">100%</span>
           </div>
           <div class="input-row">
-            <span class="input-lbl">Offset Y</span>
-            <input type="range" id="shadowOffsetY" min="-20" max="30" value="4" class="input-range">
+            <span class="input-lbl">Angle</span>
+            <input type="range" id="shadowAngle" min="0" max="360" value="180" class="input-range">
+            <span id="shadowAngleVal" class="range-val">180°</span>
+          </div>
+          <div class="input-row">
+            <span class="input-lbl">Distance</span>
+            <input type="range" id="shadowDistance" min="0" max="100" value="6" class="input-range">
+            <span id="shadowDistanceVal" class="range-val">6</span>
+          </div>
+          <div class="input-row">
+            <span class="input-lbl">Size</span>
+            <input type="range" id="shadowSize" min="0" max="100" value="0" class="input-range">
+            <span id="shadowSizeVal" class="range-val">0</span>
+          </div>
+          <div class="input-row">
+            <span class="input-lbl">Blur</span>
+            <input type="range" id="shadowBlur" min="0" max="100" value="12" class="input-range">
+            <span id="shadowBlurVal" class="range-val">12</span>
           </div>
         </div>
 

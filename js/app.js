@@ -105,6 +105,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // nothing to undo, so every caller checks for it.
   let undoHistory = null;
 
+  // What the style panel is editing: the style every caption in the ratio
+  // wears ('ratio'), or the selected caption's own changes on top of it.
+  let styleScope = 'ratio';
+  let styleScopeSubId = null;
+
   // Where the project is parked between launches. Declared up here because
   // bootProject() runs long before the project section below is reached, and a
   // `let`/`const` is unusable until its own line executes.
@@ -1022,6 +1027,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             </div>
             ${uncertain ? `<span class="caption-confidence" title="Unsure about: ${escapeHtml(uncertain.join(', '))}">?${uncertain.length}</span>` : ''}
             <span class="caption-cps${issues.overCps ? ' over' : ''}" title="Reading speed, characters per second (limit ${segmenter.settings.maxCharsPerSec})">${issues.cps.toFixed(0)}</span>
+            ${sub.style ? `<span class="caption-styled" title="This caption has its own style: ${escapeHtml(describeStyleOverrides(sub.style))}">Aa</span>` : ''}
             <button class="caption-delete-btn" title="Delete Line">✕</button>
           </div>
           ${(anySpeakers || sub.id === selectedId) ? `<input type="text" class="caption-speaker" value="${escapeHtml(sub.speaker || '')}"
@@ -1171,11 +1177,45 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     presetSelect.addEventListener('change', (e) => {
       const presetObj = presetParser.getPreset(e.target.value);
+      const sub = styleScope === 'caption' ? selectedCaption() : null;
+      if (sub) {
+        // A preset picked for one caption becomes that caption's changes —
+        // whatever it shares with the ratio style stays shared.
+        setCaptionStyle(sub, styleOverrides(presetParser.normalizePreset(presetObj)));
+        return;
+      }
       applyPresetToUI(presetObj);
       playerController.applyPreset(presetObj);
     });
 
+    document.getElementById('styleScopeRatio').addEventListener('click', () => setStyleScope('ratio'));
+    document.getElementById('styleScopeCaption').addEventListener('click', () => setStyleScope('caption'));
+    document.getElementById('btnClearCaptionStyle').addEventListener('click', () => {
+      const sub = selectedCaption();
+      if (sub) setCaptionStyle(sub, undefined);
+    });
+
+    // Selecting another caption while editing one moves the panel with it;
+    // losing the selection drops back to the ratio style.
+    subManager.onChange(() => {
+      const sub = selectedCaption();
+      if (styleScope === 'caption') {
+        if (!sub) { setStyleScope('ratio'); return; }
+        if (sub.id !== styleScopeSubId) {
+          styleScopeSubId = sub.id;
+          applyPresetToUI(SubtitleManager.effectiveStyle(sub, playerController.activePreset));
+        }
+      }
+      refreshStyleScopeUI();
+    });
+
     document.getElementById('btnResetStyle').addEventListener('click', () => {
+      const sub = styleScope === 'caption' ? selectedCaption() : null;
+      if (sub) {
+        setCaptionStyle(sub, undefined);
+        toast('This caption is back on the ratio style.', 'success');
+        return;
+      }
       const presetObj = presetParser.getPreset(presetSelect.value);
       applyPresetToUI(presetObj);
       playerController.applyPreset(presetObj);
@@ -1183,14 +1223,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     document.getElementById('btnSaveCustomPreset').addEventListener('click', () => {
-      const suggested = playerController.activePreset.name || 'My Premiere Style';
+      const sub = styleScope === 'caption' ? selectedCaption() : null;
+      // From a caption, save the look it is actually drawn in, and leave the
+      // ratio's style where it is.
+      const source = sub
+        ? SubtitleManager.effectiveStyle(sub, playerController.activePreset)
+        : playerController.activePreset;
+      const suggested = source.name || 'My Premiere Style';
       const name = prompt('Enter a name for this preset:', suggested);
       if (!name) return;
       // Saving over a name already in the library replaces that entry, so
       // iterating on a style does not leave six near-identical presets behind.
-      const entry = presetLibrary.save({ ...playerController.activePreset, name }, { source: 'custom' });
+      const entry = presetLibrary.save({ ...source, name }, { source: 'custom' });
       refreshPresetLibraryUI(entry.id);
-      playerController.applyPreset(entry);
+      if (!sub) playerController.applyPreset(entry);
       toast(presetLibrary.lastWriteOk
         ? `Saved "${entry.name}" to your preset library.`
         : `Saved "${entry.name}" for this session — this browser refused to store the library.`,
@@ -1215,8 +1261,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       bgBoxPadding: document.getElementById('bgBoxPadding'),
       enableShadow: document.getElementById('enableShadow'),
       shadowColor: document.getElementById('shadowColor'),
+      shadowOpacity: document.getElementById('shadowOpacity'),
+      shadowAngle: document.getElementById('shadowAngle'),
+      shadowDistance: document.getElementById('shadowDistance'),
+      shadowSize: document.getElementById('shadowSize'),
       shadowBlur: document.getElementById('shadowBlur'),
-      shadowOffsetY: document.getElementById('shadowOffsetY'),
       bottomMargin: document.getElementById('bottomMargin'),
       textWidth: document.getElementById('textWidth'),
       offsetX: document.getElementById('offsetX'),
@@ -1236,6 +1285,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     inputs.bgBoxPadding.addEventListener('input', (e) => document.getElementById('bgBoxPaddingVal').textContent = `${e.target.value}px`);
     inputs.bottomMargin.addEventListener('input', (e) => document.getElementById('bottomMarginVal').textContent = `${e.target.value}px`);
     inputs.textWidth.addEventListener('input', (e) => document.getElementById('textWidthVal').textContent = `${e.target.value}%`);
+    inputs.shadowOpacity.addEventListener('input', (e) => document.getElementById('shadowOpacityVal').textContent = `${e.target.value}%`);
+    inputs.shadowAngle.addEventListener('input', (e) => document.getElementById('shadowAngleVal').textContent = `${e.target.value}°`);
+    inputs.shadowDistance.addEventListener('input', (e) => document.getElementById('shadowDistanceVal').textContent = `${e.target.value}`);
+    inputs.shadowSize.addEventListener('input', (e) => document.getElementById('shadowSizeVal').textContent = `${e.target.value}`);
+    inputs.shadowBlur.addEventListener('input', (e) => document.getElementById('shadowBlurVal').textContent = `${e.target.value}`);
 
     // Alignment buttons
     const alignBtns = document.querySelectorAll('.align-btn');
@@ -1255,13 +1309,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function readAndApplyInspectorChanges() {
       const activeAlignBtn = document.querySelector('.align-btn.active');
-      playerController.setPreset({
+      const sub = styleScope === 'caption' ? selectedCaption() : null;
+      // The style on screen in the panel: the caption's own when editing one.
+      const current = sub
+        ? SubtitleManager.effectiveStyle(sub, playerController.activePreset)
+        : playerController.activePreset;
+      const values = {
         name: playerController.activePreset.name || 'Custom Style',
         fontFamily: inputs.fontFamily.value,
         // Only meaningful while the family is untouched; editing the family box
         // means the operator has chosen a different face than the file named.
-        fontPostScriptName: inputs.fontFamily.value === playerController.activePreset.fontFamily
-          ? (playerController.activePreset.fontPostScriptName || '') : '',
+        fontPostScriptName: inputs.fontFamily.value === current.fontFamily
+          ? (current.fontPostScriptName || '') : '',
         fontSize: parseInt(inputs.fontSize.value, 10) || 42,
         letterSpacing: parseFloat(inputs.letterSpacing.value) || 0,
         lineHeight: parseFloat(inputs.lineHeight.value) || 1.25,
@@ -1278,16 +1337,108 @@ document.addEventListener('DOMContentLoaded', async () => {
         bgBoxPadding: parseInt(inputs.bgBoxPadding.value, 10) || 0,
         enableShadow: inputs.enableShadow.checked,
         shadowColor: inputs.shadowColor.value,
-        shadowBlur: parseInt(inputs.shadowBlur.value, 10) || 0,
-        shadowOffsetY: parseInt(inputs.shadowOffsetY.value, 10) || 0,
+        shadowOpacity: parseFloat(inputs.shadowOpacity.value) || 0,
+        shadowAngle: parseFloat(inputs.shadowAngle.value) || 0,
+        shadowDistance: parseFloat(inputs.shadowDistance.value) || 0,
+        shadowSize: parseFloat(inputs.shadowSize.value) || 0,
+        shadowBlur: parseFloat(inputs.shadowBlur.value) || 0,
         align: activeAlignBtn ? activeAlignBtn.dataset.align : 'bottom-center',
         bottomMargin: parseInt(inputs.bottomMargin.value, 10) || 0,
         textWidth: parseInt(inputs.textWidth.value, 10) || 85,
         offsetX: parseInt(inputs.offsetX.value, 10) || 0,
         offsetY: parseInt(inputs.offsetY.value, 10) || 0,
         animationPreset: inputs.animationPreset.value
-      });
+      };
+
+      if (sub) setCaptionStyle(sub, styleOverrides(values), { keepPanel: true });
+      else playerController.setPreset(values);
     }
+  }
+
+  // --- per-caption style ----------------------------------------------------
+  function selectedCaption() {
+    const id = subManager.selectedId;
+    return id ? subManager.getSubtitles().find(s => s.id === id) || null : null;
+  }
+
+  /**
+   * The settings in `values` that differ from the ratio's style. Only those
+   * are kept on the caption, so a later change to the ratio style still
+   * reaches every setting the caption did not change itself.
+   */
+  function styleOverrides(values) {
+    // Normalised underneath so a field an older style never spelled out
+    // compares against its default rather than reading as a change.
+    const active = playerController.activePreset;
+    const base = { ...presetParser.normalizePreset(active), ...active };
+    const out = {};
+    Object.keys(values).forEach(key => {
+      if (key === 'name' || key === 'id' || key === 'premiere') return;
+      const a = values[key];
+      const b = base[key];
+      // Colours come back from the pickers lower-cased.
+      const same = (typeof a === 'string' && typeof b === 'string')
+        ? a.toLowerCase() === b.toLowerCase()
+        : a === b;
+      if (!same) out[key] = a;
+    });
+    return out;
+  }
+
+  function setCaptionStyle(sub, overrides, opts = {}) {
+    subManager.updateSubtitle(sub.id, { style: overrides || {} });
+    // Re-read rather than trust the panel: a reset or a preset choice changes
+    // every field at once, and the panel has to show what will be drawn.
+    if (!opts.keepPanel) {
+      applyPresetToUI(SubtitleManager.effectiveStyle(selectedCaption() || sub, playerController.activePreset));
+    }
+    playerController.renderOverlay();
+  }
+
+  function setStyleScope(scope) {
+    const sub = selectedCaption();
+    styleScope = scope === 'caption' && sub ? 'caption' : 'ratio';
+    styleScopeSubId = styleScope === 'caption' ? sub.id : null;
+    applyPresetToUI(styleScope === 'caption'
+      ? SubtitleManager.effectiveStyle(sub, playerController.activePreset)
+      : playerController.activePreset);
+    refreshStyleScopeUI();
+  }
+
+  function refreshStyleScopeUI() {
+    const sub = selectedCaption();
+    const editingCaption = styleScope === 'caption' && !!sub;
+    document.getElementById('styleScopeRatio').classList.toggle('active', !editingCaption);
+    const captionBtn = document.getElementById('styleScopeCaption');
+    captionBtn.classList.toggle('active', editingCaption);
+    captionBtn.disabled = !sub;
+
+    const bar = document.getElementById('captionStyleBar');
+    bar.classList.toggle('hidden', !editingCaption);
+    if (editingCaption) {
+      const index = subManager.getSubtitles().indexOf(sub) + 1;
+      document.getElementById('captionStyleLabel').textContent = sub.style
+        ? `Caption #${index} — own style: ${describeStyleOverrides(sub.style)}`
+        : `Editing caption #${index} only`;
+      document.getElementById('btnClearCaptionStyle').disabled = !sub.style;
+    }
+  }
+
+  const STYLE_FIELD_LABELS = {
+    fontFamily: 'font', fontPostScriptName: 'font', fontSize: 'size',
+    letterSpacing: 'tracking', lineHeight: 'leading', fontWeightBold: 'bold',
+    fontStyleItalic: 'italic', textUppercase: 'caps', fillColor: 'colour',
+    enableStroke: 'stroke', strokeColor: 'stroke', strokeWidth: 'stroke',
+    enableBgBox: 'box', bgBoxColor: 'box', bgBoxOpacity: 'box', bgBoxPadding: 'box',
+    enableShadow: 'shadow', shadowColor: 'shadow', shadowOpacity: 'shadow', shadowAngle: 'shadow',
+    shadowDistance: 'shadow', shadowSize: 'shadow', shadowBlur: 'shadow',
+    align: 'position', bottomMargin: 'position', offsetX: 'position', offsetY: 'position',
+    textWidth: 'line width', animationPreset: 'animation'
+  };
+
+  function describeStyleOverrides(style) {
+    const labels = Object.keys(style || {}).map(k => STYLE_FIELD_LABELS[k] || k);
+    return Array.from(new Set(labels)).join(', ');
   }
 
   /**
@@ -1467,6 +1618,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function applyPresetToUI(preset) {
     const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = value; };
     const check = (id, value) => { const el = document.getElementById(id); if (el) el.checked = !!value; };
+    preset = PresetParser.migrateShadowOffset(preset);
 
     // A preset arriving from an import or the library can be missing any field,
     // so every read falls back to the house default rather than to a second set
@@ -1494,8 +1646,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     check('enableShadow', preset.enableShadow);
     // <input type="color"> cannot hold rgba(), so normalise first.
     set('shadowColor', /^#[0-9a-f]{6}$/i.test(preset.shadowColor || '') ? preset.shadowColor : '#000000');
+    set('shadowOpacity', num('shadowOpacity'));
+    set('shadowAngle', num('shadowAngle'));
+    set('shadowDistance', num('shadowDistance'));
+    set('shadowSize', num('shadowSize'));
     set('shadowBlur', num('shadowBlur'));
-    set('shadowOffsetY', num('shadowOffsetY'));
     set('bottomMargin', num('bottomMargin'));
     set('textWidth', num('textWidth'));
     set('offsetX', num('offsetX'));
@@ -1509,6 +1664,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('bgBoxPaddingVal').textContent = `${num('bgBoxPadding')}px`;
     document.getElementById('bottomMarginVal').textContent = `${num('bottomMargin')}px`;
     document.getElementById('textWidthVal').textContent = `${num('textWidth')}%`;
+    document.getElementById('shadowOpacityVal').textContent = `${Math.round(num('shadowOpacity'))}%`;
+    document.getElementById('shadowAngleVal').textContent = `${Math.round(num('shadowAngle'))}°`;
+    document.getElementById('shadowDistanceVal').textContent = `${Math.round(num('shadowDistance'))}`;
+    document.getElementById('shadowSizeVal').textContent = `${Math.round(num('shadowSize'))}`;
+    document.getElementById('shadowBlurVal').textContent = `${Math.round(num('shadowBlur'))}`;
 
     document.querySelectorAll('.align-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.align === (preset.align || 'bottom-center'));

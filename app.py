@@ -190,7 +190,8 @@ BRIDGE_METHODS = {
     'models_list', 'model_install', 'model_install_status',
     'model_install_cancel', 'model_remove',
     'runtimes_list', 'runtime_install', 'runtime_install_status',
-    'begin_export', 'write_frame', 'repeat_frame', 'encode_prores', 'cleanup_export',
+    'begin_export', 'write_frame', 'repeat_frame', 'link_frames', 'encode_prores',
+    'cleanup_export',
     'export_folder_get', 'export_folder_clear',
 }
 
@@ -449,6 +450,30 @@ class ExportApi:
                 os.link(last, path)  # hard link: no extra disk, no copy cost
             except OSError:
                 shutil.copyfile(last, path)
+            return {'ok': True}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def link_frames(self, job_id, runs):
+        """
+        Fill every repeated frame in one call. `runs` is a list of
+        [source_index, first_index, count]: frames first..first+count-1 are
+        hard links to the already written source frame.
+        """
+        try:
+            job = self.jobs.get(job_id)
+            if not job:
+                return {'ok': False, 'error': 'Unknown export job.'}
+            frame = lambda i: os.path.join(job['dir'], f'frame_{int(i):06d}.png')
+            for src, first, count in runs or []:
+                source = frame(src)
+                if not os.path.exists(source):
+                    return {'ok': False, 'error': f'Frame {src} was never written.'}
+                for i in range(int(first), int(first) + int(count)):
+                    try:
+                        os.link(source, frame(i))
+                    except OSError:
+                        shutil.copyfile(source, frame(i))
             return {'ok': True}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
