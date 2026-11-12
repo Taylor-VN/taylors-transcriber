@@ -324,7 +324,8 @@ only and leaves the GPU idle. The MLX runtimes use the Apple GPU:
 | --- | --- | --- |
 | MLX Whisper | 90 MB | Whisper family, Apple GPU |
 | Parakeet MLX | 90 MB | Fastest accurate English, Apple GPU |
-| Qwen3-ASR MLX | 90 MB | Strongest multilingual, Apple GPU |
+| Qwen3-ASR MLX | 90 MB | Qwen3-ASR and the Qwen3 word-timing aligner, Apple GPU |
+| MLX Audio | 120 MB | NVIDIA Nemotron 3.5 Transcribe, Apple GPU |
 | Transformers + PyTorch | 0.9–3.6 GB | Cohere Transcribe, Granite Speech |
 | faster-whisper | 150 MB | The Whisper family on Windows and Linux; NVIDIA GPUs |
 | SpeechBrain | 0.9–3.6 GB | Speaker separation (shares torch with the aligner) |
@@ -348,18 +349,25 @@ runtimes that exist for your platform.
 
 | Model | Strength | Timings | Runs on |
 | --- | --- | --- | --- |
-| Qwen3-ASR 1.7B | SOTA multilingual; clearly ahead on Mandarin, noisy and accented speech | needs aligner | Apple Silicon |
-| IBM Granite Speech 4.1 2B | Lowest reported English WER of those listed | needs aligner | all |
-| Cohere Transcribe 2B | Apache 2.0; topped Open ASR for English, strong across 13 more languages | needs aligner | all |
+| NVIDIA Nemotron 3.5 Transcribe (4-bit) | Most accurate open model on Open ASR, 40 languages; 22 GB download | needs aligner | Apple Silicon, 48 GB+ |
+| Qwen3-ASR 1.7B | Next best on English, clearly ahead on Mandarin, noisy and accented speech | needs aligner | Apple Silicon |
+| IBM Granite Speech 5.0 2B | Best English accuracy off Apple Silicon; en, fr, de, es, pt, ja | needs aligner | all |
+| Cohere Transcribe 2B | Apache 2.0; strong across 14 languages | needs aligner | all |
 | NVIDIA Parakeet TDT 0.6B v2 | Very strong English, by far the fastest accurate option on Apple Silicon | own timings | Apple Silicon |
 | NVIDIA Parakeet TDT 0.6B v3 | v2's speed across 25 European languages, detected automatically | own timings | Apple Silicon |
 | Whisper large-v3 / turbo / medium / small / tiny | 99 languages, solid baseline; turbo is ~8× faster | own timings | all |
 
 The Whisper family ships in two weight formats, so it runs everywhere: MLX on
 the Apple GPU, CTranslate2 on CPU or an NVIDIA GPU. That is one entry in the
-list, not two — the app picks the right build for the machine. Qwen3-ASR and
-Parakeet are only published as MLX weights, so they are simply not offered off
-Apple Silicon rather than listed and permanently unavailable.
+list, not two — the app picks the right build for the machine. Qwen3-ASR,
+Parakeet and Nemotron run here only through MLX, so they are simply not offered
+off Apple Silicon rather than listed and permanently unavailable. Nemotron is
+also hidden on Macs with less than 48 GB of memory: it uses about 31 GB while it
+runs.
+
+Granite Speech 4.1 has been superseded by 5.0. It no longer appears in the list
+unless it is already downloaded, so it can still be removed, and projects that
+used it still open.
 
 WER figures shown in Settings are reported English averages from the Hugging
 Face Open ASR Leaderboard. The top of that board is separated by well under one
@@ -373,12 +381,23 @@ word times** — fine for a transcript, useless for captions. Whisper does repor
 word times, but infers them from cross-attention rather than measuring them, and
 they drift.
 
-So recognition and timing are decoupled. A CTC **forced aligner** (`MMS`, 1000+
-languages) pins each word to the audio after recognition. That makes the
-accuracy-tier models usable for subtitling at all, and tightens Whisper's
-timings too. Install it from **Settings → Word Timing Aligner** (it needs PyTorch, which
-Settings installs for you). The Transcribe dialog then lets you choose
-*automatic* (align when the model needs it), *always*, or *never*.
+So recognition and timing are decoupled. A **forced aligner** pins each word to
+the audio after recognition. That makes the accuracy-tier models usable for
+subtitling at all, and tightens Whisper's timings too. There are two, and the
+app picks per passage:
+
+- **Qwen3-ForcedAligner** (Apple Silicon, MLX) — the more precise of the two,
+  for Chinese, Cantonese, English, French, German, Italian, Japanese, Korean,
+  Portuguese, Russian and Spanish, up to five minutes of audio at a time.
+- **MMS** (any platform, PyTorch, 1000+ languages) — everything else. Text is
+  romanised and numbers spelled out first, so "6:30", "$45" and "résumé" align
+  like any other word.
+
+Long recordings are aligned window by window, so a passage that cannot be
+aligned only affects itself: its words are spread evenly across it and the job
+says so. Install the aligner from **Settings → Word Timing Aligner**. The
+Transcribe dialog then lets you choose *automatic* (align when the model needs
+it), *always*, or *never*.
 
 ### Speaker separation
 

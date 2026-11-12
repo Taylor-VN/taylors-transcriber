@@ -149,7 +149,7 @@ class SettingsController {
     }
 
     const canInstall = this.probe.can_install_runtimes !== false;
-    const missingRecommended = runtimes.filter(r => r.recommended && !r.installed);
+    const missingRecommended = runtimes.filter(r => r.recommended && (!r.installed || r.outdated));
     recBtn.classList.toggle('hidden', !canInstall || missingRecommended.length === 0);
     recBtn.disabled = !canInstall;
 
@@ -185,7 +185,11 @@ class SettingsController {
       : `${rt.size_mb} MB download`;
 
     let action;
-    if (rt.installed) {
+    if (rt.installed && rt.outdated && canInstall) {
+      // Imports fine, but older than this release needs (or missing a package
+      // added since). The same install upgrades it in place.
+      action = '<button class="btn-model primary" data-action="install-runtime">Update</button>';
+    } else if (rt.installed) {
       action = '<span class="runtime-ok">Installed</span>';
     } else if (!canInstall) {
       action = '<button class="btn-model" disabled>Unavailable</button>';

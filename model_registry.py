@@ -16,16 +16,27 @@ decide whether a model is usable in a subtitling tool:
                       paired with a non-English language silently returns
                       nonsense, so the UI must not offer that combination.
 
-WER figures are the reported English averages from the Hugging Face Open ASR
-Leaderboard at the time of writing. The top of that leaderboard moves monthly
-and is separated by well under one WER point, so treat them as a rough tier
-guide rather than a ranking to optimise against. Entries where no figure is
-recorded are left as None rather than guessed.
+WER figures are English averages from the Hugging Face Open ASR Leaderboard.
+Qwen3-ASR, both Granite Speech models, Parakeet v3 and Whisper large-v3 use the
+public-set means of the 21 October 2026 snapshot, as reported in Table 6 of the
+Nemotron 3.5 Transcribe technical report. Parakeet v2 (6.05) and Cohere
+Transcribe (5.42) are not in that table and keep the figures recorded when they
+were added, from an earlier snapshot, so they are not strictly comparable. The
+top of the leaderboard moves monthly and is separated by well under one WER
+point, so treat them as a rough tier guide rather than a ranking to optimise
+against. Entries where no figure is recorded are left as None rather than
+guessed.
+
+A model can be marked `superseded_by` a newer one. It stays resolvable through
+get() so saved projects and settings keep working, and an installed copy is still
+listed (flagged, so it can be removed), but it is no longer offered otherwise.
 """
 
 import os
 import platform
 import shutil
+import subprocess
+import sys
 
 # Engine identifiers
 ENGINE_MLX_WHISPER = 'mlx-whisper'
@@ -34,6 +45,7 @@ ENGINE_MLX_QWEN3 = 'mlx-qwen3-asr'
 ENGINE_TRANSFORMERS = 'transformers'
 ENGINE_GRANITE_SPEECH = 'granite-speech'
 ENGINE_FASTER_WHISPER = 'faster-whisper'
+ENGINE_MLX_AUDIO = 'mlx-audio'
 
 def is_apple_silicon():
     return platform.system() == 'Darwin' and platform.machine() in ('arm64', 'aarch64')
@@ -45,6 +57,7 @@ ENGINE_LABELS = {
     ENGINE_MLX_QWEN3: 'MLX (Apple GPU)',
     ENGINE_TRANSFORMERS: 'Transformers (MPS/CUDA/CPU)',
     ENGINE_GRANITE_SPEECH: 'Transformers (MPS/CUDA/CPU)',
+    ENGINE_MLX_AUDIO: 'MLX (Apple GPU)',
     # CTranslate2 has no Metal backend, which is worth saying on a Mac and
     # actively misleading anywhere else — it is the GPU path on an NVIDIA box.
     ENGINE_FASTER_WHISPER: ('faster-whisper (CPU on Mac)' if is_apple_silicon()
@@ -58,6 +71,7 @@ ENGINE_PACKAGES = {
     ENGINE_TRANSFORMERS: 'transformers',
     ENGINE_GRANITE_SPEECH: 'transformers',
     ENGINE_FASTER_WHISPER: 'faster-whisper',
+    ENGINE_MLX_AUDIO: 'mlx-audio',
 }
 
 
@@ -87,7 +101,9 @@ def _m(apple=None, **kw):
         'needs_alignment': True,   # run the forced aligner for caption timing
         'notes': '',
         'tier': 'balanced',        # accuracy | balanced | fast
+        'superseded_by': None,     # id of the newer model that replaces this one
         'platforms': ['any'],      # as for runtimes: restricts where it is offered
+        'min_ram_gb': None,        # not offered on a machine with less memory
     }
     base.update(kw)
     if apple and is_apple_silicon():
@@ -95,26 +111,39 @@ def _m(apple=None, **kw):
     return base
 
 
+# The 40 languages Nemotron 3.5 Transcribe lists as supported (model card).
+NEMOTRON_LANGUAGES = [
+    'cs', 'nl', 'en', 'fr', 'de', 'hi', 'it', 'ko', 'pl', 'pt', 'ru', 'sk', 'es',
+    'bg', 'hr', 'da', 'et', 'fi', 'hu', 'ja', 'lv', 'lt', 'ro', 'sl', 'sv', 'th',
+    'tr', 'uk', 'ar', 'bn', 'zh', 'el', 'he', 'id', 'mt', 'mr', 'tl', 'ta', 'te',
+    'vi',
+]
+
+
 MODELS = {
     # ---------------------------------------------------------------- accuracy
     'qwen3-asr-1.7b': _m(
         id='qwen3-asr-1.7b',
-        repo='mlx-community/Qwen3-ASR-1.7B',
+        # mlx-community publish this only with a precision suffix; the bare
+        # 'mlx-community/Qwen3-ASR-1.7B' does not exist on the hub, so it could
+        # never be installed. bf16 is the unquantised conversion.
+        repo='mlx-community/Qwen3-ASR-1.7B-bf16',
         label='Qwen3-ASR 1.7B',
         engine=ENGINE_MLX_QWEN3,
-        # Only published as MLX weights, so it is hidden off Apple Silicon
-        # rather than listed as permanently unavailable.
+        # This app runs it only through MLX (the PyTorch original would need
+        # the qwen-asr package, which it does not carry), so it is hidden off
+        # Apple Silicon rather than listed as permanently unavailable.
         platforms=['darwin-arm64'],
-        size_gb=3.6,
+        size_gb=4.1,
         languages='multilingual',
-        wer=None,
+        wer=4.94,
         word_timings=False,
         needs_alignment=True,
         tier='accuracy',
-        notes=('State of the art among open ASR models and competitive with the '
-               'strongest commercial APIs. Clearly ahead on Mandarin, and the '
-               'strongest option for noisy or accented speech. LLM-backbone, so '
-               'it emits no usable word timings — the forced aligner supplies them.'),
+        notes=('The most accurate model here that fits any Apple Silicon Mac: '
+               'second only to Nemotron on English, clearly ahead on Mandarin, '
+               'and strong on noisy or accented speech. LLM-backbone, so it '
+               'emits no usable word timings — the forced aligner supplies them.'),
     ),
     'cohere-transcribe-2b': _m(
         id='cohere-transcribe-2b',
@@ -128,8 +157,29 @@ MODELS = {
         needs_alignment=True,
         tier='accuracy',
         notes=('Apache 2.0. Topped the Open ASR Leaderboard for English on '
-               'release and is comparable or better than other open models '
-               'across 13 further languages. No word timings of its own.'),
+               'release (since overtaken) and is comparable or better than '
+               'other open models across 13 further languages. No word '
+               'timings of its own.'),
+    ),
+    'granite-speech-5.0-2b': _m(
+        id='granite-speech-5.0-2b',
+        repo='ibm-granite/granite-speech-5.0-2b',
+        label='IBM Granite Speech 5.0 2B',
+        engine=ENGINE_GRANITE_SPEECH,
+        size_gb=4.4,
+        # Speech recognition is trained for these six; the model card lists
+        # more languages only for translation. An explicit list makes the UI
+        # refuse the rest instead of returning guesswork.
+        languages=['en', 'fr', 'de', 'es', 'pt', 'ja'],
+        wer=5.06,
+        word_timings=False,
+        needs_alignment=True,
+        tier='accuracy',
+        notes=('Apache 2.0. Best English WER of the portable models here, and '
+               'it runs on CUDA and CPU as well as Apple Silicon. Covers '
+               'English, French, German, Spanish, Portuguese and Japanese. '
+               'LLM-backbone: slower per audio-hour, and it needs the forced '
+               'aligner for caption timing.'),
     ),
     'granite-speech-4.1-2b': _m(
         id='granite-speech-4.1-2b',
@@ -138,13 +188,44 @@ MODELS = {
         engine=ENGINE_GRANITE_SPEECH,
         size_gb=4.4,
         languages='multilingual',
-        wer=5.33,
+        wer=5.35,
         word_timings=False,
         needs_alignment=True,
         tier='accuracy',
-        notes=('Lowest reported English WER of the models listed here. '
-               'LLM-backbone: accurate but slower per audio-hour, and it needs '
-               'the forced aligner for caption timing.'),
+        superseded_by='granite-speech-5.0-2b',
+        notes=('Replaced by Granite Speech 5.0, which is more accurate at the '
+               'same size. Kept here only while it is installed. LLM-backbone '
+               'and needs the forced aligner for caption timing.'),
+    ),
+
+    # Nemotron 3.5 Transcribe. NVIDIA's own runtimes (NeMo, vLLM) need NVIDIA
+    # datacentre or Blackwell GPUs on Linux, which this app cannot ship, so it is
+    # offered only where mlx-audio runs it natively: Apple Silicon with enough
+    # unified memory. The official NVIDIA NVFP4/FP8 checkpoints load directly and,
+    # unlike the community "EA" MLX exports (early-access weights under an
+    # evaluation licence, with no CTC head), keep the CTC timestamp head, so the
+    # model gives its own word times and needs no aligner pass.
+    'nemotron-3.5-transcribe': _m(
+        id='nemotron-3.5-transcribe',
+        repo='nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4',
+        label='NVIDIA Nemotron 3.5 Transcribe 30B (4-bit)',
+        engine=ENGINE_MLX_AUDIO,
+        platforms=['darwin-arm64'],
+        min_ram_gb=48,
+        size_gb=21.6,
+        languages=NEMOTRON_LANGUAGES,
+        wer=4.71,
+        # NVIDIA's CTC timing head is in the checkpoint, but mlx-audio's port
+        # of it misplaces words when more than one voice is present, so the
+        # forced aligner supplies timings (see NemotronMlxEngine.load).
+        word_timings=False,
+        needs_alignment=True,
+        tier='accuracy',
+        notes=('The most accurate open model on the Open ASR Leaderboard, in 40 '
+               'languages. Large: a 22 GB download and about 31 GB of memory '
+               'while it runs (48 GB Mac or better), and slower than Qwen3-ASR. '
+               'This 4-bit build can lose some accuracy outside English. Word '
+               'timings come from the forced aligner. OpenMDW-1.1 licence.'),
     ),
 
     # ------------------------------------------------------- English specialist
@@ -183,7 +264,7 @@ MODELS = {
         word_timings=True,
         needs_alignment=False,
         tier='accuracy',
-        wer=6.34,
+        wer=5.58,
         notes=('Parakeet v2\'s multilingual successor: 25 European languages with '
                'its own word timings, at the same speed on the Apple GPU. A '
                'fraction behind v2 on English alone.'),
@@ -202,6 +283,7 @@ MODELS = {
                    engine=ENGINE_MLX_WHISPER),
         size_gb=3.1,
         languages='multilingual',
+        wer=6.66,
         word_timings=True,
         needs_alignment=False,
         tier='balanced',
@@ -266,17 +348,51 @@ MODELS = {
     ),
 }
 
-# The forced aligner. Multilingual CTC alignment covering 1000+ languages, used
-# to attach precise word times to any transcript, whatever produced it.
-ALIGNER_MODEL = {
-    'id': 'mms-fa-aligner',
-    'repo': 'MahmoudAshraf/mms-300m-1130-forced-aligner',
-    'label': 'MMS Forced Aligner (word timing)',
-    'size_gb': 1.2,
-    'notes': ('Supplies precise per-word start/end times for models that do not '
-              'report their own, and tightens the approximate timings that '
-              "Whisper derives from cross-attention. Recommended for captions."),
+# The forced aligners. Two backends attach precise word times to a transcript,
+# whatever produced it; engines.ForcedAligner picks per window of audio.
+#
+#   * Qwen3-ForcedAligner (Apple Silicon, MLX): the preferred backend. 11
+#     languages (Chinese, English, Cantonese, French, German, Italian, Japanese,
+#     Korean, Portuguese, Russian, Spanish), up to 5 minutes of speech per call,
+#     per the model card. Its weights are a normal Hugging Face repo, installed
+#     explicitly from Settings and never downloaded behind the user's back.
+#   * MMS_FA (torchaudio, every platform): CTC alignment over 1000+ languages
+#     via romanised text. Its weights are not on the Hugging Face hub at all:
+#     torchaudio fetches them from dl.fbaipublicfiles.com into the torch hub
+#     cache (~/.cache/torch/hub/checkpoints/model.pt) on first use, so this
+#     entry has no `repo`; `source` tells the installer how to fetch it.
+SOURCE_TORCHAUDIO_MMS = 'torchaudio-mms'
+
+QWEN_ALIGNER_MODEL = {
+    'id': 'qwen3-forced-aligner',
+    'repo': 'Qwen/Qwen3-ForcedAligner-0.6B',
+    'label': 'Qwen3 Forced Aligner (word timing)',
+    'size_gb': 1.7,
+    'platforms': ['darwin-arm64'],
+    'notes': ('Runs on the Apple GPU and places each word to within a frame or two. '
+              'Covers Chinese, English, Cantonese, French, German, Italian, Japanese, '
+              'Korean, Portuguese, Russian and Spanish, up to five minutes of speech '
+              'at a time; anything else uses the MMS aligner instead. Needs the '
+              'Qwen3-ASR MLX runtime. Recommended for captions.'),
 }
+
+MMS_ALIGNER_MODEL = {
+    'id': 'mms-fa-aligner',
+    'repo': None,
+    'source': SOURCE_TORCHAUDIO_MMS,
+    'label': 'MMS Forced Aligner (word timing)',
+    'size_gb': 1.3,
+    'platforms': ['any'],
+    'notes': ('Multilingual CTC aligner covering 1000+ languages, run through '
+              'PyTorch on any platform. The weights come from torchaudio rather '
+              'than Hugging Face and download to the PyTorch cache. Supplies '
+              'word times for models that report none, and is the fallback where '
+              'the Qwen3 aligner does not apply.'),
+}
+
+# What Settings shows as "the aligner": the best one this machine can run.
+ALIGNER_MODEL = QWEN_ALIGNER_MODEL if is_apple_silicon() else MMS_ALIGNER_MODEL
+ALIGNER_MODELS = [QWEN_ALIGNER_MODEL, MMS_ALIGNER_MODEL] if is_apple_silicon() else [MMS_ALIGNER_MODEL]
 
 # Speaker separation. ECAPA-TDNN turns a passage of speech into a vector that
 # describes the voice rather than the words, which is what lets the same person
@@ -294,7 +410,7 @@ DIARIZER_MODEL = {
 
 # Models that are not transcription engines but still install and remove like
 # one from the Settings panel.
-EXTRA_MODELS = {m['id']: m for m in (ALIGNER_MODEL, DIARIZER_MODEL)}
+EXTRA_MODELS = {m['id']: m for m in (*ALIGNER_MODELS, DIARIZER_MODEL)}
 
 
 def _torch_stack_mb():
@@ -355,11 +471,13 @@ RUNTIMES = {
     ENGINE_MLX_QWEN3: {
         'id': ENGINE_MLX_QWEN3,
         'label': 'Qwen3-ASR MLX (Apple GPU)',
-        'packages': ['mlx-qwen3-asr>=0.1.0'],
+        'packages': ['mlx-qwen3-asr>=0.4.4'],
         'module': 'mlx_qwen3_asr',
         'platforms': ['darwin-arm64'],
         'size_mb': 90,
-        'notes': 'Strongest multilingual accuracy, on the Apple GPU.',
+        'notes': ('Strongest multilingual accuracy, on the Apple GPU. Also runs the '
+                  'Qwen3 forced aligner, the most precise word-timing option on '
+                  'Apple Silicon.'),
     },
     ENGINE_TRANSFORMERS: {
         'id': ENGINE_TRANSFORMERS,
@@ -382,6 +500,19 @@ RUNTIMES = {
                   'a newer transformers release — Granite Speech\'s processor '
                   'classes only exist from 4.52.1 onward. Already satisfied if '
                   'that runtime is installed and current.'),
+    },
+    ENGINE_MLX_AUDIO: {
+        'id': ENGINE_MLX_AUDIO,
+        'label': 'MLX Audio (Apple GPU, Nemotron Transcribe)',
+        'packages': ['mlx-audio>=0.6.5'],
+        'module': 'mlx_audio',
+        'platforms': ['darwin-arm64'],
+        # mlx-audio itself is small; it pulls in transformers, sentencepiece,
+        # scipy, miniaudio and sounddevice (mlx and numpy are already present).
+        # No torch.
+        'size_mb': 120,
+        'notes': ('Runs NVIDIA Nemotron 3.5 Transcribe on the Apple GPU. A small '
+                  'download; the model itself is large.'),
     },
     ENGINE_FASTER_WHISPER: {
         'id': ENGINE_FASTER_WHISPER,
@@ -418,12 +549,14 @@ RUNTIMES = {
     'aligner-torch': {
         'id': 'aligner-torch',
         'label': 'PyTorch + torchaudio (word-timing aligner)',
-        'packages': ['torch>=2.2.0', 'torchaudio>=2.2.0'],
+        'packages': ['torch>=2.2.0', 'torchaudio>=2.2.0', 'uroman>=1.3', 'num2words>=0.5.14'],
         'module': 'torchaudio',
         'platforms': ['any'],
         'size_mb': TORCH_STACK_MB,
-        'notes': ('Powers the forced aligner, which measures per-word times '
-                  'instead of inferring them. Strongly recommended for captions.'),
+        'notes': ('Powers the MMS forced aligner, which measures per-word times '
+                  'instead of inferring them and covers 1000+ languages. uroman and '
+                  'num2words let it handle digits and non-Latin scripts. Strongly '
+                  'recommended for captions.'),
     },
 }
 
@@ -449,14 +582,49 @@ def module_available(module_name):
         return False
 
 
+def runtime_outdated(runtime):
+    """
+    Whether an installed runtime falls short of its own package list.
+
+    "Installed" only proves the module imports, so a runtime installed by an
+    earlier release stays "installed" forever even when this release needs a
+    newer version of it, or an extra package alongside it (the aligner's
+    uroman and num2words). Comparing against the requirement strings lets
+    Settings offer an update, which is the same pip install: pip upgrades
+    anything whose minimum is not met.
+
+    Never raises; if the versions cannot be read, the runtime is reported
+    current rather than nagging about something that may be fine.
+    """
+    try:
+        from importlib import metadata
+        from packaging.requirements import Requirement
+    except Exception:
+        return False
+    for spec in runtime.get('packages') or []:
+        try:
+            req = Requirement(spec)
+            try:
+                have = metadata.version(req.name)
+            except metadata.PackageNotFoundError:
+                return True
+            if req.specifier and not req.specifier.contains(have, prereleases=True):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def list_runtimes():
     """Installable runtimes for this machine, with live installed state."""
     out = []
     for rt in RUNTIMES.values():
         if not runtime_supported(rt):
             continue
+        installed = module_available(rt['module'])
         out.append(dict(rt,
-                        installed=module_available(rt['module']),
+                        installed=installed,
+                        outdated=installed and runtime_outdated(rt),
                         recommended=rt['id'] in recommended_runtimes()))
     return out
 
@@ -466,11 +634,12 @@ def recommended_runtimes():
     The set worth having on this machine.
 
     On Apple Silicon that means the GPU runtimes — faster-whisper would work but
-    would leave the GPU idle — plus torch for the aligner, since without it the
-    accuracy-tier models cannot produce caption timings at all.
+    would leave the GPU idle — plus mlx-qwen3-asr, which runs the Qwen3 forced
+    aligner, and torch for the MMS aligner that covers every other language;
+    without either, the accuracy-tier models cannot produce caption timings.
     """
     if is_apple_silicon():
-        return [ENGINE_MLX_WHISPER, ENGINE_MLX_PARAKEET, 'aligner-torch']
+        return [ENGINE_MLX_WHISPER, ENGINE_MLX_PARAKEET, ENGINE_MLX_QWEN3, 'aligner-torch']
     return [ENGINE_FASTER_WHISPER, 'aligner-torch']
 
 
@@ -487,6 +656,7 @@ def engine_available(engine):
         ENGINE_TRANSFORMERS: 'transformers',
         ENGINE_GRANITE_SPEECH: 'transformers',
         ENGINE_FASTER_WHISPER: 'faster_whisper',
+        ENGINE_MLX_AUDIO: 'mlx_audio',
     }.get(engine)
     if not module:
         return False
@@ -524,6 +694,32 @@ def is_installed(repo):
     return False
 
 
+def torch_hub_checkpoint_path():
+    """Where torchaudio's MMS_FA weights land (torch.hub's checkpoint cache)."""
+    home = os.environ.get('TORCH_HOME') or os.path.join(
+        os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache'),
+        'torch')
+    return os.path.join(home, 'hub', 'checkpoints', 'model.pt')
+
+
+def entry_cache_path(entry):
+    """Cache location of a catalogue entry, whichever source it comes from."""
+    if entry.get('source') == SOURCE_TORCHAUDIO_MMS:
+        return torch_hub_checkpoint_path()
+    return repo_cache_path(entry.get('repo'))
+
+
+def entry_installed(entry):
+    """Like is_installed(), but also understands entries fetched by torchaudio."""
+    if entry.get('source') == SOURCE_TORCHAUDIO_MMS:
+        path = torch_hub_checkpoint_path()
+        try:
+            return os.path.isfile(path) and os.path.getsize(path) > 100 * 1024 * 1024
+        except OSError:
+            return False
+    return is_installed(entry.get('repo'))
+
+
 def dir_size_bytes(path):
     if not path or not os.path.isdir(path):
         return 0
@@ -542,11 +738,25 @@ def dir_size_bytes(path):
 def describe(model):
     """Registry entry plus live install state."""
     out = dict(model)
-    out['installed'] = is_installed(model['repo'])
+    out['installed'] = entry_installed(model)
     out['engine_label'] = ENGINE_LABELS.get(model['engine'], model['engine'])
     out['engine_package'] = ENGINE_PACKAGES.get(model['engine'], model['engine'])
     out['engine_available'] = engine_available(model['engine'])
-    out['disk_bytes'] = dir_size_bytes(repo_cache_path(model['repo'])) if out['installed'] else 0
+    out['disk_bytes'] = dir_size_bytes(entry_cache_path(model)) if out['installed'] else 0
+    return out
+
+
+def describe_extra(entry):
+    """An aligner/diarizer entry with live install state (no engine fields)."""
+    out = dict(entry)
+    out['installed'] = entry_installed(entry)
+    path = entry_cache_path(entry)
+    if not out['installed'] or not path:
+        out['disk_bytes'] = 0
+    elif os.path.isfile(path):
+        out['disk_bytes'] = os.path.getsize(path)
+    else:
+        out['disk_bytes'] = dir_size_bytes(path)
     return out
 
 
@@ -558,14 +768,56 @@ def list_models():
     install would sit in the list permanently unavailable, with the runtime that
     would fix it correctly hidden from Settings — a dead end. Better not to
     offer it. get() still resolves any id, so a project made on another machine
-    still opens.
+    still opens. Superseded models are listed only while installed.
     """
-    return [describe(m) for m in MODELS.values() if model_supported(m)]
+    out = []
+    for m in MODELS.values():
+        if not model_supported(m):
+            continue
+        d = describe(m)
+        if m.get('superseded_by'):
+            # Hidden once gone, but an installed copy must stay visible so it
+            # can be removed. Flag it for the UI and say so in the label.
+            if not d['installed']:
+                continue
+            d['superseded'] = True
+            newer = MODELS.get(m['superseded_by'])
+            d['label'] = f"{m['label']} (superseded"
+            d['label'] += f" by {newer['label']})" if newer else ')'
+        out.append(d)
+    return out
+
+
+_RAM_GB = None
+
+
+def total_ram_gb():
+    """Installed physical memory in GB (0 if it cannot be read). Cached."""
+    global _RAM_GB
+    if _RAM_GB is None:
+        total = 0
+        try:
+            if sys.platform == 'darwin':
+                out = subprocess.run(['sysctl', '-n', 'hw.memsize'],
+                                     capture_output=True, text=True, timeout=5)
+                total = int(out.stdout.strip() or 0)
+            else:
+                total = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+        except Exception:
+            total = 0
+        _RAM_GB = round(total / (1024 ** 3), 1)
+    return _RAM_GB
 
 
 def model_supported(model):
     plats = model.get('platforms') or ['any']
-    return 'any' in plats or platform_tag() in plats
+    if not ('any' in plats or platform_tag() in plats):
+        return False
+    need = model.get('min_ram_gb')
+    # An unreadable total (0) must not hide a model that is probably fine.
+    if need and total_ram_gb() and total_ram_gb() < need:
+        return False
+    return True
 
 
 def get(model_id):
@@ -579,8 +831,8 @@ def recommended(purpose='accuracy'):
     On Apple Silicon the MLX engines run on the GPU while faster-whisper is
     stuck on CPU, so the recommendation differs from a CUDA box.
     """
-    # Never name a model this machine cannot run: Parakeet and Qwen3-ASR are
-    # published only as MLX weights, so off Apple Silicon the recommendation
+    # Never name a model this machine cannot run: Parakeet and Qwen3-ASR run
+    # here only through MLX, so off Apple Silicon the recommendation
     # falls back to the best portable model for the same purpose.
     if purpose == 'fast':
         return 'parakeet-tdt-0.6b-v2' if is_apple_silicon() else 'whisper-large-v3-turbo'
@@ -588,7 +840,9 @@ def recommended(purpose='accuracy'):
         return 'qwen3-asr-1.7b' if is_apple_silicon() else 'cohere-transcribe-2b'
     if purpose == 'english':
         return 'parakeet-tdt-0.6b-v2' if is_apple_silicon() else 'distil-large-v3'
-    return 'qwen3-asr-1.7b' if is_apple_silicon() else 'cohere-transcribe-2b'
+    # Best portable English WER; Cohere stays the multilingual pick above for
+    # its wider language coverage.
+    return 'qwen3-asr-1.7b' if is_apple_silicon() else 'granite-speech-5.0-2b'
 
 
 def free_disk_bytes():
