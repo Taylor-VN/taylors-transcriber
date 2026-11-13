@@ -6,8 +6,16 @@ is right: the reader cannot tell where one voice stops and the next begins.
 This module answers "whose word is this", so the segmenter can force a caption
 break at every speaker change and label the result.
 
-The approach is embedding clustering rather than an end-to-end diarisation
-pipeline:
+Two backends, best first:
+
+Sortformer (Apple Silicon) is an end-to-end diariser — the speaker encoder
+from Nemotron 3.5 Transcribe, published on its own. It reports, every 10 ms,
+which of up to eight people is talking, overlaps included, and each word goes
+to whoever is most active across it. Short interjections are its strength: a
+one-second "Your pieces?" is a second of activity, where an embedding needs
+several seconds of a voice before it can call it a person.
+
+ECAPA (everywhere else, and the fallback) is embedding clustering:
 
   1. Words — already timed by the recogniser or the forced aligner — are
      grouped into short spans, split at pauses and at the ends of sentences.
@@ -17,16 +25,22 @@ pipeline:
      blurs the boundary.
   2. Each span is encoded to a speaker embedding (ECAPA-TDNN), a vector that
      describes the voice rather than the words.
-  3. Those embeddings are clustered. With the speaker count known, clustering
-     stops at that many; otherwise it stops once the closest remaining pair is
-     further apart than two spans of one voice normally are.
+  3. Those embeddings are clustered by splitting, one group in two at a time.
+     With the speaker count known, the split that tightens its group most is
+     taken until there are that many; otherwise a split is taken only while
+     both halves come out more alike than the group they came from.
   4. Labels are smoothed, changes that fall where no speaker could have changed
      are dropped, and what is left is merged into turns.
 
 pyannote's pipelines are the usual answer here and are deliberately not used:
 their weights sit behind a licence acceptance and an access token, which does
-not fit an app whose every other model installs on a button click. The trade is
-overlapping speech — when two people talk at once, one of them wins the span.
+not fit an app whose every other model installs on a button click. The ECAPA
+path's trade is overlapping speech — when two people talk at once, one of them
+wins the span.
+
+Neither backend can label a word the recogniser never wrote down. Speech under
+someone else's — an interviewer's question over the end of an answer — is often
+dropped by the transcription model itself, and so has no caption to label.
 
 Nothing here ever raises: a missing speaker label must not cost the operator an
 otherwise good transcript.
@@ -66,14 +80,24 @@ LEXICAL_MIN_SEC = 0.3
 # and after a sentence cut there is often no silence to take.
 CONTEXT_SEC = 0.15
 
-# Cosine distance between two ECAPA embeddings, above which they are treated as
-# different people. Measured on this app's own spans — one to three seconds,
-# clustered by average linkage — the two populations sit well apart: the last
-# merge within one voice lands around 0.35 even when the delivery, pace and
-# level vary across the recording, while the first merge between two people is
-# 0.65 or above, and that holds for same-gender pairs, which are the hard case.
-# Halfway between the two leaves room for material noisier than anything tested.
-MERGE_THRESHOLD = 0.55
+# There is no fixed distance at which two spans become two people. How far
+# apart one voice's own spans sit depends on the recording far more than on the
+# voice: a presenter outdoors over a music bed spreads to a median of 0.72
+# against himself, which is further than two women on one phone line sit from
+# each other. Any single threshold either invents people in the first or merges
+# them in the second — so a split is judged against the group it came from
+# instead (see _cluster).
+#
+# Auto mode will not split off a voice with fewer strong spans than this. Below
+# it the group's own spread rests on one or two pairs, which is not enough to
+# tell a person from a handful of noisy spans.
+MIN_VOICE_SPANS = 3
+
+# Neither half of a split may be smaller than this share of the strong spans,
+# with or without a known count. The spans that end up alone are the oddities —
+# a line over a music sting, a laugh, one word stretched over a pause — and
+# given a speaker slot they take it from a real person.
+MIN_GROUP_SHARE = 0.05
 
 # Auto mode never invents more than this many people. Material with more voices
 # than this is a panel show, not a promo, and the count is worth setting by hand.
@@ -90,26 +114,48 @@ BATCH_SPANS = 16
 MAX_CLUSTER_SPANS = 3000
 
 
-def available():
-    """Whether the speaker-separation runtime is importable."""
+def _runtime_available(entry):
+    """Whether a backend's runtime is importable on this machine."""
     try:
         import numpy  # noqa: F401
-        import torch  # noqa: F401
-        import speechbrain  # noqa: F401
+        if entry['id'] == registry.SORTFORMER_MODEL['id']:
+            from mlx_audio.vad import load  # noqa: F401
+        else:
+            import torch  # noqa: F401
+            import speechbrain  # noqa: F401
         return True
     except Exception:
         return False
 
 
-def model_installed():
-    return registry.is_installed(registry.DIARIZER_MODEL['repo'])
+def _describe_entry(entry):
+    out = registry.describe_extra(entry)
+    out['available'] = _runtime_available(entry)
+    return out
+
+
+def ready_backend():
+    """The best speaker model whose runtime and weights are both present, or None."""
+    for entry in registry.DIARIZER_MODELS:
+        if registry.entry_installed(entry) and _runtime_available(entry):
+            return entry
+    return None
 
 
 def describe():
-    """Registry entry plus live state, for the Settings panel."""
-    return dict(registry.DIARIZER_MODEL,
-                installed=model_installed(),
-                available=available())
+    """
+    The preferred speaker model plus live state, for Settings and the
+    transcribe dialog.
+
+    The top level is the model this machine should use, so the dialog can say
+    exactly what to install. `ready` is whether *any* backend can run — an
+    older setup with only the ECAPA model keeps working until Sortformer is
+    added — and `models` lists every backend for the Settings rows.
+    """
+    models = [_describe_entry(m) for m in registry.DIARIZER_MODELS]
+    ready = ready_backend()
+    return dict(models[0], ready=ready is not None,
+                backend=ready['id'] if ready else None, models=models)
 
 
 def diarize_words(wav_path, words, speakers='auto', progress_cb=None):
@@ -119,15 +165,27 @@ def diarize_words(wav_path, words, speakers='auto', progress_cb=None):
     The word dicts are labelled in place, so a caller holding the same list
     sees the speakers without reading the return value.
 
+    Sortformer is used where it is ready, ECAPA otherwise; if Sortformer fails
+    on a recording, ECAPA gets a go before the job settles for no labels.
+
     @param words    [{word, start, end}, ...] in time order
     @param speakers 'auto', or a known speaker count
     @returns {'words': [...], 'turns': [...], 'count': int} — words carry a
              'speaker' key — or None when separation could not run at all.
     """
-    try:
-        return _diarize(wav_path, words, speakers, progress_cb)
-    except Exception:
-        return None
+    for entry in registry.DIARIZER_MODELS:
+        if not (registry.entry_installed(entry) and _runtime_available(entry)):
+            continue
+        try:
+            if entry['id'] == registry.SORTFORMER_MODEL['id']:
+                result = _diarize_sortformer(wav_path, words, speakers, progress_cb)
+            else:
+                result = _diarize(wav_path, words, speakers, progress_cb)
+        except Exception:
+            result = None
+        if result:
+            return result
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +235,8 @@ def _diarize(wav_path, words, speakers, progress_cb):
         step = len(strong) / float(MAX_CLUSTER_SPANS)
         strong = [strong[int(i * step)] for i in range(MAX_CLUSTER_SPANS)]
 
+    if progress_cb:
+        progress_cb(0.88, 'Grouping voices…')
     labels = _cluster(embeddings[strong], k=wanted)
     if labels is None:
         return None
@@ -200,6 +260,175 @@ def _diarize(wav_path, words, speakers, progress_cb):
     return {'words': words, 'turns': turns,
             'count': len(set(t['speaker'] for t in turns))}
 
+
+# ---------------------------------------------------------------------------
+# Sortformer: frame-level speaker activity
+# ---------------------------------------------------------------------------
+
+# Below this mean activity across a word, nobody is clearly speaking it — a
+# word the aligner placed in a breath, or speech too quiet to attribute — and
+# it takes the label of the words around it instead.
+ACTIVITY_FLOOR = 0.1
+
+# How far a handover may be moved forward to the end of the sentence it falls
+# in, and how much of the earlier speaker must still be audible over the words
+# moved. See _snap_handovers.
+SNAP_WORDS = 2
+SNAP_MIN_ACTIVITY = 0.2
+
+_sortformer = None
+
+
+def _load_sortformer(progress_cb=None):
+    """Loaded once and kept: the weights are 200 MB and take seconds to build."""
+    global _sortformer
+    if _sortformer is None:
+        if progress_cb:
+            progress_cb(0.05, 'Loading the speaker model…')
+        from mlx_audio.vad import load
+        _sortformer = load(registry.SORTFORMER_MODEL['repo'], strict=True)
+    return _sortformer
+
+
+def _diarize_sortformer(wav_path, words, speakers, progress_cb):
+    """
+    Speakers from Sortformer's activity: who is talking in each 10 ms frame.
+
+    Each word goes to whoever is most active across it. Unlike the embedding
+    path there is no grouping step to get wrong — the model has already kept
+    track of who is who across the recording — and nothing needs a minimum
+    length, so a single "Okay?" from the other side of the table is caught.
+    """
+    import numpy as np
+    import mlx.core as mx
+
+    words = [w for w in (words or []) if w.get('start') is not None]
+    if not words:
+        return None
+
+    wanted = _speaker_count(speakers)
+    if wanted == 1:
+        return _single_speaker(words)
+
+    samples, rate = _read_wav(wav_path)
+    if samples is None or not len(samples):
+        return None
+    duration = len(samples) / float(rate)
+
+    model = _load_sortformer(progress_cb)
+
+    # Streamed rather than run whole: the model works through a long recording
+    # with bounded memory either way, and the chunks give the progress bar
+    # something to report.
+    hop = getattr(getattr(model, '_processor_config', None), 'hop_length', None)
+    chunks = []
+    for result in model.generate_stream(samples, rate):
+        chunks.append(np.array(result.speaker_probs.astype(mx.float32)))
+        state = getattr(result, 'state', None)
+        if progress_cb and hop and state is not None:
+            done = state.frames_processed * hop / float(rate)
+            progress_cb(0.1 + 0.8 * min(1.0, done / duration),
+                        f'Separating speakers… {int(done)}s of {int(duration)}s')
+    try:
+        mx.clear_cache()
+    except Exception:
+        pass
+
+    activity = np.concatenate([c for c in chunks if len(c)]) if chunks else None
+    if activity is None or not len(activity):
+        return None
+    step = duration / len(activity)
+
+    if wanted:
+        # Told how many people there are: keep the busiest that many and let
+        # each word choose among them. A sixth "speaker" Sortformer heard for a
+        # second is more likely an echo of one of the five than a person.
+        keep = np.argsort(-activity.sum(axis=0))[:wanted]
+        mask = np.zeros(activity.shape[1])
+        mask[keep] = 1.0
+        activity = activity * mask
+
+    per_word = _word_activity(words, activity, step)
+    labels = _label_words(per_word)
+    _snap_handovers(words, labels, per_word)
+
+    order = {}
+    for label in labels:
+        if label not in order:
+            order[label] = f'Speaker {len(order) + 1}'
+    for w, label in zip(words, labels):
+        w['speaker'] = order[label]
+
+    turns = _turns([{'start': float(w['start']),
+                     'end': float(w.get('end') or w['start']),
+                     'speaker': w['speaker']} for w in words])
+    return {'words': words, 'turns': turns, 'count': len(order)}
+
+
+def _word_activity(words, activity, step):
+    """Mean activity of every speaker across each word's frames."""
+    import numpy as np
+    out = []
+    last = len(activity)
+    for w in words:
+        start = float(w['start'])
+        end = max(start, float(w.get('end') or start))
+        a = min(last - 1, max(0, int(start / step)))
+        b = min(last, max(a + 1, int(np.ceil(end / step))))
+        out.append(activity[a:b].mean(axis=0))
+    return out
+
+
+def _label_words(per_word):
+    """
+    The most active speaker for each word; words nobody is clearly speaking
+    carry on with the speaker before them (or, at the very start, after them).
+    """
+    labels = [int(a.argmax()) if a.max() >= ACTIVITY_FLOOR else None for a in per_word]
+    known = [label for label in labels if label is not None]
+    if not known:
+        return [0] * len(labels)
+    current = known[0]
+    for i, label in enumerate(labels):
+        if label is None:
+            labels[i] = current
+        else:
+            current = label
+    return labels
+
+
+def _snap_handovers(words, labels, per_word):
+    """
+    Move a handover that lands a word or two before a sentence end to that end.
+
+    Where two people overlap at a handover, the words at the seam are a toss-up
+    on activity alone — "...I'm in New Jersey now, | though. Well, there isn't"
+    gives "though." to the person who answers, and the caption that follows
+    then opens with someone else's word. The sentence boundary is the better
+    witness, so the change moves there — but only while the first speaker is
+    still audible across the words moved. A real interruption mid-sentence
+    ("I was going to—" / "Wait.") has the first speaker silent under "Wait.",
+    and stays where it is.
+    """
+    for i in range(1, len(labels)):
+        before = labels[i - 1]
+        if labels[i] == before or _ends_sentence(words[i - 1]):
+            continue
+        for j in range(i, min(i + SNAP_WORDS, len(labels))):
+            if labels[j] != labels[i]:
+                break
+            if _ends_sentence(words[j]):
+                run = range(i, j + 1)
+                if all(per_word[k][before] >= SNAP_MIN_ACTIVITY for k in run):
+                    for k in run:
+                        labels[k] = before
+                break
+    return labels
+
+
+# ---------------------------------------------------------------------------
+# ECAPA: voice embeddings, grouped
+# ---------------------------------------------------------------------------
 
 def _speaker_count(speakers):
     """'auto' (or anything unparseable) means decide from the audio."""
@@ -360,7 +589,7 @@ def _load_encoder(device=None):
     except ImportError:  # speechbrain < 1.0
         from speechbrain.pretrained import EncoderClassifier
 
-    repo = registry.DIARIZER_MODEL['repo']
+    repo = registry.ECAPA_MODEL['repo']
     # SpeechBrain wants a working directory of its own for the checkpoint. It
     # fetches through huggingface_hub, so the download itself still lands in the
     # shared cache the Settings panel installs into and reports on.
@@ -476,65 +705,162 @@ def _normalise(matrix):
 
 def _cluster(embeddings, k=None):
     """
-    Average-linkage agglomerative clustering on cosine distance.
+    Divisive clustering on cosine distance: one group in two at a time.
 
-    Average linkage rather than single: one borderline pair of spans should not
-    be able to chain two speakers into one cluster, which is exactly what single
-    linkage does on voices recorded in the same room.
+    Every split is judged by how much more alike each half is than the group it
+    came from (the "spread", the mean distance between its members). That is a
+    measure relative to the recording in hand, which is what a fixed threshold
+    could never be — see MIN_VOICE_SPANS.
 
-    @param k  a known speaker count, or None to stop at MERGE_THRESHOLD
-    @returns  an array of cluster labels, 0..n-1 in merge order
+    With a known count, the split that tightens its group most is taken until
+    there are k groups. Asked to find the count, a split is taken only where
+    both halves are tighter than their parent: two people make two tight groups,
+    while one voice cut in two leaves a loose remainder of its oddest spans.
+
+    Splitting top-down rather than stopping a bottom-up merge part-way also
+    stops a stray span from claiming a speaker. Merging forced to stop at k
+    clusters keeps the k-1 most outlying spans apart and lumps everyone else
+    together — a laugh becomes Speaker 2 and the actual second person is folded
+    into Speaker 1.
+
+    @param k  a known speaker count, or None to decide from the spans
+    @returns  an array of group labels, 0..count-1
     """
     import numpy as np
 
     n = len(embeddings)
     if n == 0:
         return None
-    if n == 1:
-        return np.zeros(1, dtype=int)
+    if n == 1 or k == 1:
+        return np.zeros(n, dtype=int)
 
     X = _normalise(embeddings.astype('float64'))
     distances = 1.0 - (X @ X.T)
-    np.fill_diagonal(distances, np.inf)
+    np.fill_diagonal(distances, 0.0)
 
-    sizes = np.ones(n)
-    active = np.ones(n, dtype=bool)
-    members = {i: [i] for i in range(n)}
+    floor = max(2, int(round(MIN_GROUP_SHARE * n)))
+    target = min(k or MAX_SPEAKERS, n)
+    groups = [np.arange(n)]
+    proposals = {}
 
-    remaining = n
-    while remaining > 1:
-        # Rows and columns of merged-away clusters are set to infinity as they
-        # go, so the whole matrix can be searched without masking it each pass.
-        i, j = divmod(int(np.argmin(distances)), n)
-        closest = distances[i, j]
+    def propose(group, smallest):
+        key = (group.tobytes(), smallest)
+        if key not in proposals:
+            halves = _split_in_two(distances, group, smallest)
+            if halves is None:
+                proposals[key] = None
+            else:
+                a, b = halves
+                parent = _spread(distances, group)
+                spread_a = _spread(distances, a)
+                spread_b = _spread(distances, b)
+                gain = parent - (len(a) * spread_a + len(b) * spread_b) / len(group)
+                distinct = (spread_a < parent and spread_b < parent
+                            and min(len(a), len(b)) >= MIN_VOICE_SPANS)
+                proposals[key] = (gain, distinct, a, b)
+        return proposals[key]
 
-        if k is None:
-            # Past the threshold these are different people — unless there are
-            # still more clusters than any plausible cast, in which case the
-            # threshold has clearly been read too strictly for this recording.
-            if closest > MERGE_THRESHOLD and remaining <= MAX_SPEAKERS:
-                break
-        elif remaining <= k:
+    def best_split(smallest):
+        found = None
+        for index, group in enumerate(groups):
+            p = propose(group, smallest)
+            if p is None or (k is None and not p[1]):
+                continue
+            if found is None or p[0] > found[0][0]:
+                found = (p, index)
+        return found
+
+    while len(groups) < target:
+        found = best_split(floor)
+        # Told how many people there are, a split of a group too small to
+        # satisfy the floor beats handing back fewer speakers than were asked
+        # for: the operator knows the material better than the share does.
+        if found is None and k is not None:
+            found = best_split(1)
+        if found is None:
             break
-
-        # Lance-Williams update for average linkage. Distances to clusters that
-        # are already gone stay infinite: inf * weight is still inf.
-        merged = (sizes[i] * distances[i] + sizes[j] * distances[j]) / (sizes[i] + sizes[j])
-        distances[i] = merged
-        distances[:, i] = merged
-        distances[i, i] = np.inf
-        distances[j] = np.inf
-        distances[:, j] = np.inf
-        sizes[i] += sizes[j]
-        active[j] = False
-        remaining -= 1
-        members[i].extend(members.pop(j))
+        (_, _, a, b), index = found
+        groups[index:index + 1] = [a, b]
 
     labels = np.zeros(n, dtype=int)
-    for label, root in enumerate(i for i in range(n) if active[i]):
-        for member in members[root]:
-            labels[member] = label
+    for label, group in enumerate(groups):
+        labels[group] = label
     return labels
+
+
+def _spread(distances, group):
+    """Mean distance between the members of a group; 0 for a single span."""
+    import numpy as np
+    m = len(group)
+    if m < 2:
+        return 0.0
+    # The diagonal is zero, so the full block sum is the sum over pairs.
+    return float(distances[np.ix_(group, group)].sum() / (m * (m - 1)))
+
+
+def _split_in_two(distances, group, smallest):
+    """
+    The top split of a group under average-linkage merging, ignoring strays.
+
+    The group is merged bottom-up to one, and the split used is the last point
+    at which two clusters of at least `smallest` spans still stood apart. The
+    few spans still on their own at that point are not a third voice — they are
+    the outliers the floor exists to keep out — so each joins whichever of the
+    two it sits nearer on average.
+
+    Average linkage rather than single: one borderline pair of spans should not
+    be able to chain two speakers together, which is exactly what single linkage
+    does on voices recorded in the same room.
+
+    @returns (a, b) arrays of indexes into the full matrix, or None
+    """
+    import numpy as np
+    m = len(group)
+    if m < 2 * smallest:
+        return None
+
+    D = distances[np.ix_(group, group)].copy()
+    np.fill_diagonal(D, np.inf)
+    sizes = np.ones(m)
+
+    # Merge to the top, recording the order, and note the last merge after
+    # which two clusters of real size were still apart.
+    merges = []
+    big = m if smallest <= 1 else 0
+    last_split = -1 if big >= 2 else None
+    for step in range(m - 1):
+        i, j = divmod(int(np.argmin(D)), m)
+        before = int(sizes[i] >= smallest) + int(sizes[j] >= smallest)
+        # Lance-Williams update for average linkage. Rows of clusters already
+        # merged away stay infinite: inf * weight is still inf.
+        merged = (sizes[i] * D[i] + sizes[j] * D[j]) / (sizes[i] + sizes[j])
+        D[i] = merged
+        D[:, i] = merged
+        D[i, i] = np.inf
+        D[j] = np.inf
+        D[:, j] = np.inf
+        sizes[i] += sizes[j]
+        sizes[j] = 0
+        merges.append((i, j))
+        big += int(sizes[i] >= smallest) - before
+        if big >= 2:
+            last_split = step
+
+    if last_split is None:
+        return None
+
+    members = {i: [i] for i in range(m)}
+    for i, j in merges[:last_split + 1]:
+        members[i].extend(members.pop(j))
+
+    clusters = sorted(members.values(), key=len, reverse=True)
+    a, b = list(clusters[0]), list(clusters[1])
+    for stray in clusters[2:]:
+        for s in stray:
+            to_a = distances[group[s], group[a]].mean()
+            to_b = distances[group[s], group[b]].mean()
+            (a if to_a <= to_b else b).append(s)
+    return group[np.array(a)], group[np.array(b)]
 
 
 def _centroids(embeddings, labels):

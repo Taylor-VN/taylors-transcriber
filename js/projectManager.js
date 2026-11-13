@@ -120,6 +120,9 @@ class ProjectManager {
       // in a later session without paying for another model run. It belongs to
       // the film, not a ratio: there is one soundtrack.
       transcription: init.transcription || null,
+      // Each speaker's changes to the ratio style, by name. On the film rather
+      // than a ratio: a person wears the same colour in every deliverable.
+      speakerStyles: SubtitleManager.cleanSpeakerStyles(init.speakerStyles),
       segment: {
         maxCharsPerLine: 42,
         maxLines: 2,
@@ -393,6 +396,7 @@ class ProjectManager {
           zoom: f.zoom,
           playhead: f.playhead,
           transcription: f.transcription,
+          speakerStyles: Object.keys(f.speakerStyles || {}).length ? f.speakerStyles : undefined,
           ratios: ratios
         };
       })

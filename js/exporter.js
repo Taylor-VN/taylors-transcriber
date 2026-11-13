@@ -80,8 +80,8 @@ class AlphaExporter {
 
     const base = this.player.activePreset;
     const fontState = await this.ensureFontsReady([base].concat(
-      this.subManager.getSubtitles().filter(sub => sub.style)
-        .map(sub => SubtitleManager.effectiveStyle(sub, base))));
+      this.subManager.getSubtitles().filter(sub => sub.style || sub.speaker)
+        .map(sub => this.subManager.styleFor(sub, base))));
     if (!fontState.ready && opts.onFontWarning) opts.onFontWarning(fontState.missing);
 
     const project = this.player.project;

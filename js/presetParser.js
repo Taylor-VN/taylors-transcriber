@@ -630,6 +630,17 @@ class PresetParser {
       offsetY: num(presetObj.offsetY, 0),
       animationPreset: ['none', 'fade', 'pop', 'karaoke'].includes(presetObj.animationPreset)
         ? presetObj.animationPreset : 'none',
+      // Who is speaking, burned in with the caption: "BILL: Welcome…" before
+      // the text, or the name on a line of its own above it. Not a Premiere
+      // setting — it is part of the words drawn, not the text style — but it
+      // lives here so a speaker's own style can switch it off for a narrator.
+      speakerLabel: ['none', 'prefix', 'above'].includes(presetObj.speakerLabel)
+        ? presetObj.speakerLabel : 'none',
+      // 'change': only on the first caption of each turn, which is how
+      // broadcast captions mark a new voice; 'always': every caption.
+      speakerLabelWhen: presetObj.speakerLabelWhen === 'always' ? 'always' : 'change',
+      // '' draws the name in the text colour.
+      speakerLabelColor: this.parseColorString(presetObj.speakerLabelColor) || '',
       premiere: presetObj.premiere || null
     };
   }

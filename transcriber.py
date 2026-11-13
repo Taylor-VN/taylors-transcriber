@@ -543,16 +543,17 @@ class Transcriber:
         is never fatal: unlabelled captions still beat no captions, so the job
         carries on with a note explaining what is missing.
         """
-        if not diarize.available():
-            job.notes.append(
-                'Speaker separation was requested but the SpeechBrain runtime is not '
-                'installed, so every caption is unlabelled. Install it from '
-                'Settings → Speech Runtimes.')
-            return []
-        if not diarize.model_installed():
-            job.notes.append(
-                'Speaker separation was requested but the speaker model has not been '
-                'downloaded, so every caption is unlabelled. Install it from Settings.')
+        state = diarize.describe()
+        if not state.get('ready'):
+            if not state.get('available'):
+                job.notes.append(
+                    f'Speaker separation was requested but the {state["package"]} runtime '
+                    'is not installed, so every caption is unlabelled. Install it from '
+                    'Settings → Speech Runtimes.')
+            else:
+                job.notes.append(
+                    'Speaker separation was requested but the speaker model has not been '
+                    'downloaded, so every caption is unlabelled. Install it from Settings.')
             return []
 
         result = diarize.diarize_words(job.audio_path, words,

@@ -940,6 +940,8 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   margin-bottom: var(--s1);
   background: transparent;
   border: 1px solid var(--border);
+  /* Takes the speaker's own text colour when they have one. */
+  border-left-width: 3px;
   border-radius: var(--r-sm);
   color: var(--text-dim);
   font-family: inherit;

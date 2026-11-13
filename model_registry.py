@@ -394,23 +394,55 @@ MMS_ALIGNER_MODEL = {
 ALIGNER_MODEL = QWEN_ALIGNER_MODEL if is_apple_silicon() else MMS_ALIGNER_MODEL
 ALIGNER_MODELS = [QWEN_ALIGNER_MODEL, MMS_ALIGNER_MODEL] if is_apple_silicon() else [MMS_ALIGNER_MODEL]
 
-# Speaker separation. ECAPA-TDNN turns a passage of speech into a vector that
-# describes the voice rather than the words, which is what lets the same person
-# be recognised across a whole timeline. Small, and ungated — unlike pyannote's
+# Speaker separation, two ways.
+#
+# Sortformer — the speaker encoder inside Nemotron 3.5 Transcribe, published on
+# its own — is an end-to-end diariser: it reads the audio and says, every 10 ms,
+# which of up to eight people is talking, overlaps included. That is what finds
+# the interviewer who only ever says "Your pieces?": a one-second line is a
+# second of activity to it, where an embedding needs several seconds of a voice
+# before it can call it a person. Apple Silicon only, through mlx-audio.
+#
+# ECAPA-TDNN turns a passage of speech into a vector that describes the voice
+# rather than the words, and the passages are then grouped. It runs anywhere
+# torch does, so it is the fallback. Both are ungated — unlike pyannote's
 # diarisation weights, which need a licence acceptance and an access token.
-DIARIZER_MODEL = {
+SORTFORMER_MODEL = {
+    'id': 'nemotron-diarization',
+    'repo': 'mlx-community/Nemotron-3-Diarization',
+    'label': 'NVIDIA Nemotron 3 Diarization (speaker separation)',
+    'size_gb': 0.2,
+    'platforms': ['darwin-arm64'],
+    'runtime': ENGINE_MLX_AUDIO,
+    'package': 'mlx-audio',
+    'notes': ('Hears who is talking at every moment, up to eight people, so even '
+              'a one-word interjection gets its own speaker. The speaker encoder '
+              'from Nemotron 3.5 Transcribe, run on the Apple GPU; works with any '
+              'transcription model. Needs the MLX Audio runtime and word timings. '
+              'OpenMDW-1.1 licence.'),
+}
+
+ECAPA_MODEL = {
     'id': 'ecapa-speaker-embeddings',
     'repo': 'speechbrain/spkrec-ecapa-voxceleb',
     'label': 'ECAPA Speaker Embeddings (speaker separation)',
     'size_gb': 0.08,
-    'notes': ('Identifies who is speaking, so captions break at every change of '
-              'voice and never put two people on one line. Needs word timings, '
-              'so it pairs with the aligner.'),
+    'platforms': ['any'],
+    'runtime': 'diarizer-speechbrain',
+    'package': 'speechbrain',
+    'notes': ('Identifies who is speaking by the sound of their voice, so captions '
+              'break at every change of speaker. Needs a few sentences from each '
+              'person, so it can miss someone who only interjects. Needs word '
+              'timings, so it pairs with the aligner.'),
 }
+
+# Best first: speaker separation uses the first of these that is ready.
+DIARIZER_MODELS = [SORTFORMER_MODEL, ECAPA_MODEL] if is_apple_silicon() else [ECAPA_MODEL]
+DIARIZER_MODEL = DIARIZER_MODELS[0]
 
 # Models that are not transcription engines but still install and remove like
 # one from the Settings panel.
-EXTRA_MODELS = {m['id']: m for m in (*ALIGNER_MODELS, DIARIZER_MODEL)}
+EXTRA_MODELS = {m['id']: m for m in (*ALIGNER_MODELS, *DIARIZER_MODELS)}
 
 
 def _torch_stack_mb():
