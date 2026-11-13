@@ -6,7 +6,7 @@ build from must match it — a mismatch fails the build rather than shipping a D
 whose About box lies. Bump it in the same commit that you tag.
 """
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 # Bundled builds (DMG / setup.exe / AppImage) stamp this file's directory with a
 # marker; see bootstrap.is_bundled(). Running from a source checkout leaves it
