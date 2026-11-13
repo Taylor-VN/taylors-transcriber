@@ -49,6 +49,12 @@ class VideoPlayerController {
     this.rafHandle = null;
     this.onFrameRenderCallbacks = [];
 
+    // Viewer zoom: a multiple of the fitted size (1 = Fit), plus how far the
+    // zoomed frame is panned from centre, in CSS pixels.
+    this.viewZoom = 1;
+    this.viewPan = { x: 0, y: 0 };
+    this.onViewZoomCallbacks = [];
+
     this.applyProjectToCanvas();
     this.initEvents();
   }
@@ -128,8 +134,74 @@ class VideoPlayerController {
       w = h * ratio;
     }
 
-    frame.style.width = `${Math.floor(w)}px`;
-    frame.style.height = `${Math.floor(h)}px`;
+    this.fitSize = { w: Math.floor(w), h: Math.floor(h) };
+    frame.style.width = `${Math.round(this.fitSize.w * this.viewZoom)}px`;
+    frame.style.height = `${Math.round(this.fitSize.h * this.viewZoom)}px`;
+    this.applyViewPan();
+  }
+
+  // --- Viewer zoom & pan ---
+  /**
+   * Zooms the program frame around a point on screen, so whatever is under the
+   * cursor stays under it — Alt+scroll in Premiere's monitors. The frame is
+   * resized rather than CSS-scaled: the canvases hold the full project
+   * resolution, so a bigger box shows real detail instead of blown-up pixels.
+   */
+  zoomViewAt(factor, clientX, clientY) {
+    const viewport = document.getElementById('viewportContainer');
+    if (!viewport || !this.fitSize) return;
+    const prev = this.viewZoom;
+    const next = Math.max(1, Math.min(8, prev * factor));
+    if (next === prev) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const px = clientX - (rect.left + rect.width / 2);
+    const py = clientY - (rect.top + rect.height / 2);
+    const k = next / prev;
+    this.viewPan = {
+      x: px - (px - this.viewPan.x) * k,
+      y: py - (py - this.viewPan.y) * k,
+    };
+    this.viewZoom = next;
+    this.fitProgramFrame();
+    this.emitViewZoom();
+  }
+
+  panView(dx, dy) {
+    if (this.viewZoom <= 1) return;
+    this.viewPan = { x: this.viewPan.x - dx, y: this.viewPan.y - dy };
+    this.applyViewPan();
+  }
+
+  resetView() {
+    if (this.viewZoom === 1 && !this.viewPan.x && !this.viewPan.y) return;
+    this.viewZoom = 1;
+    this.viewPan = { x: 0, y: 0 };
+    this.fitProgramFrame();
+    this.emitViewZoom();
+  }
+
+  /** Keeps the zoomed frame covering the viewer — no panning off into space. */
+  applyViewPan() {
+    const frame = document.getElementById('programFrame');
+    const viewport = document.getElementById('viewportContainer');
+    if (!frame || !viewport || !this.fitSize) return;
+    const maxX = Math.max(0, (this.fitSize.w * this.viewZoom - viewport.clientWidth) / 2);
+    const maxY = Math.max(0, (this.fitSize.h * this.viewZoom - viewport.clientHeight) / 2);
+    this.viewPan = {
+      x: Math.max(-maxX, Math.min(maxX, this.viewPan.x)),
+      y: Math.max(-maxY, Math.min(maxY, this.viewPan.y)),
+    };
+    const { x, y } = this.viewPan;
+    frame.style.transform = x || y ? `translate(${Math.round(x)}px, ${Math.round(y)}px)` : '';
+  }
+
+  onViewZoom(cb) {
+    this.onViewZoomCallbacks.push(cb);
+  }
+
+  emitViewZoom() {
+    this.onViewZoomCallbacks.forEach(cb => cb(this.viewZoom));
   }
 
   // --- Project / Aspect Ratio ---
@@ -142,6 +214,10 @@ class VideoPlayerController {
     if (!aspect) return this.project;
     this.project = { ...aspect };
     this.applyProjectToCanvas();
+    // A different shape is a different framing; start it from Fit.
+    this.viewZoom = 1;
+    this.viewPan = { x: 0, y: 0 };
+    this.emitViewZoom();
     this.fitProgramFrame();
     this.renderOverlay();
     this.onProjectChangeCallbacks.forEach(cb => cb(this.project));

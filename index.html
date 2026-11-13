@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Taylor's Transcriber — Premiere Pro Style Captions Editor</title>
+  <title>Taylor's Transcriber — Captions Editor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Montserrat:wght@600;700;800;900&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&family=Outfit:wght@600;800&display=swap" rel="stylesheet">
@@ -325,6 +325,10 @@
           <div class="safe-guides hidden" id="safeGuides"></div>
         </div>
 
+        <!-- Viewer zoom readout; shown only while zoomed past Fit. Click to fit. -->
+        <button id="viewerZoomBadge" class="viewer-zoom-badge hidden" type="button"
+                title="Back to Fit (Alt + scroll to zoom)"></button>
+
         <!-- Video Dropzone Overlay -->
         <div id="dropzoneOverlay" class="dropzone-overlay hidden">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
@@ -422,7 +426,7 @@
               <option value="netflix_clean">Broadcast Clean</option>
               <option value="minimal_white">Minimal White Shadow</option>
               <option value="cinematic_boxed">Cinematic Black Box</option>
-              <option value="classic_yellow">Classic Film Yellow (Premiere Pro)</option>
+              <option value="classic_yellow">Classic Film Yellow</option>
               <option value="tiktok_pop">TikTok Pop (Bold Cyan Stroke)</option>
               <option value="cyber_neon">Cyber Neon Glow</option>
             </optgroup>
@@ -449,7 +453,7 @@
             <input type="number" id="fontSize" class="input-num" value="42" min="12" max="140" title="Font Size (px)">
           </div>
           <div class="input-row">
-            <label class="checkbox-label" title="Tracking, in 1/1000 em — the unit Premiere uses">Tracking</label>
+            <label class="checkbox-label" title="Tracking, in 1/1000 em">Tracking</label>
             <input type="range" id="letterSpacing" min="-200" max="800" step="5" value="0" class="input-range">
             <span id="letterSpacingVal" class="range-val">0</span>
           </div>
@@ -608,9 +612,9 @@
           <div class="input-row margin-top-sm">
             <span class="input-lbl">Offset X / Y</span>
             <input type="number" id="offsetX" class="input-num" value="0" min="-2000" max="2000" step="1"
-                   title="Horizontal nudge from the position zone, in 1080p pixels — Premiere's Position X. Drag to scrub, click to type.">
+                   title="Horizontal nudge from the position zone, in 1080p pixels. Drag to scrub, click to type.">
             <input type="number" id="offsetY" class="input-num" value="0" min="-2000" max="2000" step="1"
-                   title="Vertical nudge from the position zone, in 1080p pixels — Premiere's Position Y, negative is up. Drag to scrub, click to type.">
+                   title="Vertical nudge from the position zone, in 1080p pixels, negative is up. Drag to scrub, click to type.">
           </div>
           <div class="input-row margin-top-sm">
             <span class="input-lbl">Bottom Margin</span>
@@ -761,6 +765,8 @@
         <div class="shortcut-row"><kbd>,</kbd> <span>Settings — Manage Transcription Models</span></div>
         <div class="shortcut-row"><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> <span>Edit the 16:9 / 1:1 / 4:5 / 9:16 captions of this film</span></div>
         <div class="shortcut-row"><kbd>+</kbd> / <kbd>-</kbd> <span>Zoom Timeline In / Out</span></div>
+        <div class="shortcut-row"><kbd>Alt/⌥ + Scroll</kbd> <span>Zoom the Program Monitor or Timeline at the cursor</span></div>
+        <div class="shortcut-row"><kbd>Shift + Scroll</kbd> <span>Scroll the Timeline Left / Right</span></div>
         <div class="shortcut-row"><kbd>[</kbd> / <kbd>]</kbd> <span>Previous / Next Film in this Project</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + F</kbd> <span>Search Captions</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + Alt + F</kbd> <span>Find and Replace in Captions</span></div>
@@ -769,6 +775,27 @@
         <div class="shortcut-row"><kbd>Ctrl/⌘ + S</kbd> <span>Save Project</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + Shift + S</kbd> <span>Save Project As…</span></div>
         <div class="shortcut-row"><kbd>Ctrl/⌘ + O</kbd> <span>Open Project</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unsaved changes on quit. Shown when the window is closed with a dirty
+       project; js/app.js requestAppClose() drives it. -->
+  <div id="unsavedModal" class="modal-backdrop hidden" role="alertdialog" aria-modal="true"
+       aria-labelledby="unsavedModalTitle" aria-describedby="unsavedModalText">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <h3 id="unsavedModalTitle">Save changes before closing?</h3>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint tight" id="unsavedModalText">
+          Your changes will be lost if you don't save them.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button id="btnUnsavedDiscard" class="btn btn-outline btn-danger modal-footer-left">Don't Save</button>
+        <button id="btnUnsavedCancel" class="btn btn-outline">Cancel</button>
+        <button id="btnUnsavedSave" class="btn btn-primary">Save</button>
       </div>
     </div>
   </div>
@@ -806,7 +833,7 @@
         <p class="modal-hint" id="exportModalHint">
           Renders the captions only, on a fully transparent background, at the
           project resolution. Drop the result on a track above your footage in
-          Premiere Pro — the alpha channel is read automatically.
+          your editor — the alpha channel is read automatically.
         </p>
 
         <div class="export-row export-row-top">
@@ -886,11 +913,33 @@
   <div id="settingsModal" class="modal-backdrop hidden">
     <div class="modal-card modal-card-wide">
       <div class="modal-header">
-        <h3>Settings — Transcription Models</h3>
+        <h3>Settings</h3>
         <button id="btnCloseSettings" class="btn-icon" title="Close"><svg class="icon"><use href="#i-close"/></svg></button>
       </div>
       <div class="modal-body">
         <div id="settingsSystemInfo" class="system-info">Checking system…</div>
+
+        <div class="settings-section">
+          <div class="settings-section-head">
+            <label class="group-label" for="uiScaleSelect">Interface Size</label>
+            <select id="uiScaleSelect" class="select-sm" aria-label="Interface size">
+              <option value="0.75">75%</option>
+              <option value="0.9">90%</option>
+              <option value="1">100%</option>
+              <option value="1.1">110%</option>
+              <option value="1.25">125%</option>
+              <option value="1.5">150%</option>
+              <option value="1.75">175%</option>
+              <option value="2">200%</option>
+              <option value="2.5">250%</option>
+              <option value="3">300%</option>
+            </select>
+          </div>
+          <p class="modal-hint tight">
+            Scales the whole interface. Useful on a 4K display, where the default
+            size reads small. Remembered between launches.
+          </p>
+        </div>
 
         <div class="settings-section">
           <div class="settings-section-head">

@@ -193,6 +193,7 @@ BRIDGE_METHODS = {
     'begin_export', 'write_frame', 'repeat_frame', 'link_frames', 'encode_prores',
     'cleanup_export',
     'export_folder_get', 'export_folder_clear',
+    'ui_scale_get', 'ui_scale_set',
 }
 
 MAX_BRIDGE_BODY = 64 * 1024 * 1024  # frames and audio chunks are the large ones
@@ -691,6 +692,26 @@ class ExportApi:
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
+    # --- interface scale --------------------------------------------------
+    UI_SCALE_MIN, UI_SCALE_MAX = 0.5, 3.0
+
+    def ui_scale_get(self):
+        try:
+            scale = float(load_preferences().get('ui_scale') or 1.0)
+        except (TypeError, ValueError):
+            scale = 1.0
+        return {'ok': True, 'scale': min(max(scale, self.UI_SCALE_MIN), self.UI_SCALE_MAX)}
+
+    def ui_scale_set(self, scale):
+        try:
+            scale = min(max(float(scale), self.UI_SCALE_MIN), self.UI_SCALE_MAX)
+            prefs = load_preferences()
+            prefs['ui_scale'] = round(scale, 2)
+            save_preferences(prefs)
+            return {'ok': True, 'scale': prefs['ui_scale']}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
     def export_folder_clear(self):
         try:
             prefs = load_preferences()
@@ -797,6 +818,79 @@ class ExportApi:
     def project_recent_get(self):
         return {'ok': True, 'projects': load_preferences().get('recent_projects') or []}
 
+    # --- quit guard ---------------------------------------------------------
+    def _attach_close_guard(self, window):
+        """
+        Stops the window closing (red button, Cmd+Q, Alt+F4) until the page has
+        had the chance to offer saving unsaved work.
+
+        pywebview's `closing` handler runs on the GUI thread and has to answer
+        at once, but asking the page is a round trip that needs that same thread
+        — so the close is always cancelled first, and the page is asked from a
+        worker. A clean project, or a page that does not answer, closes straight
+        away; a dirty one shows its Save / Don't Save / Cancel dialog and calls
+        app_close() once the user has chosen.
+        """
+        self._window = window
+        self._close_allowed = False
+        self._close_pending = False
+        window.events.closing += self._on_window_closing
+
+    def _on_window_closing(self):
+        if self._close_allowed:
+            return None
+        if not self._close_pending:
+            self._close_pending = True
+            threading.Thread(target=self._ask_page_about_close, daemon=True).start()
+        return False
+
+    def _ask_page_about_close(self):
+        answer = {}
+
+        def ask():
+            try:
+                answer['value'] = self._window.evaluate_js(
+                    'window.requestAppClose ? window.requestAppClose() : false')
+            except Exception as e:
+                answer['error'] = e
+
+        # A hung page must not leave the window impossible to close.
+        asker = threading.Thread(target=ask, daemon=True)
+        asker.start()
+        asker.join(5.0)
+
+        self._close_pending = False
+        if answer.get('value') is True:
+            return  # the page is showing its dialog and will call app_close()
+        self.app_close()
+
+    def app_close(self):
+        """
+        Closes the window for real, skipping the unsaved-work check.
+
+        The page calls this over the js_api bridge, which runs it on a worker
+        thread and then hands the return value back with evaluate_js. Destroying
+        the window here would tear down the webview before that hand-back runs,
+        and on macOS the process then dies instead of quitting. So the destroy
+        waits for the calling thread to finish delivering its result first.
+        """
+        window = getattr(self, '_window', None)
+        if window is None:
+            return {'ok': False, 'error': 'No native window to close.'}
+        if self._close_allowed:
+            return {'ok': True}  # already closing (e.g. Cmd+D pressed twice)
+        self._close_allowed = True
+
+        caller = threading.current_thread()
+
+        def destroy_after_caller():
+            if caller is not threading.main_thread():
+                caller.join(2.0)  # a hung hand-back must not keep the window open
+            window.destroy()
+
+        threading.Thread(target=destroy_after_caller, daemon=True).start()
+        return {'ok': True}
+
     def project_recent_clear(self):
         try:
             prefs = load_preferences()
@@ -832,6 +926,27 @@ class ExportApi:
         return result if isinstance(result, str) else result[0]
 
 
+def _initial_window_size():
+    """
+    Size the window to the primary monitor instead of a fixed 1400x900, which
+    looks tiny on a 4K display. Uses ~75% of the screen, never smaller than the
+    old default (unless the screen itself is smaller). Falls back to the old
+    default when pywebview is too old to report screens (added in 5.0).
+    """
+    default_w, default_h = 1400, 900
+    try:
+        screen = webview.screens[0]
+        screen_w, screen_h = int(screen.width), int(screen.height)
+        if screen_w <= 0 or screen_h <= 0:
+            return default_w, default_h
+    except Exception:
+        return default_w, default_h
+    width = max(default_w, int(screen_w * 0.75))
+    height = max(default_h, int(screen_h * 0.8))
+    # Leave room for the menu bar / taskbar and window chrome.
+    return min(width, screen_w - 40), min(height, screen_h - 120)
+
+
 def launch_native(port, api):
     """Open the pywebview window. Returns False if no GUI backend will load."""
     ok, message = bootstrap.diagnose_gui_backend()
@@ -841,16 +956,18 @@ def launch_native(port, api):
             print(f'  {line}')
         return False
 
-    webview.create_window(
-        title="Taylor's Transcriber — Premiere Captions Editor",
+    width, height = _initial_window_size()
+    window = webview.create_window(
+        title="Taylor's Transcriber",
         url=f'http://127.0.0.1:{port}',
         js_api=api,
-        width=1400,
-        height=900,
+        width=width,
+        height=height,
         resizable=True,
         min_size=(1024, 700),
         background_color='#121212'
     )
+    api._attach_close_guard(window)
     try:
         webview.start()
         return True

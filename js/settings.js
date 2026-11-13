@@ -26,6 +26,7 @@ class SettingsController {
 
   bind() {
     const modal = document.getElementById('settingsModal');
+    this.bindUiScale();
 
     document.getElementById('btnSettings').addEventListener('click', () => this.open());
     document.getElementById('btnCloseSettings').addEventListener('click', () => this.close());
@@ -44,6 +45,59 @@ class SettingsController {
     document.getElementById('btnInstallRecommended')
       .addEventListener('click', () => this.installRuntime('__recommended__',
         document.getElementById('runtimeList')));
+  }
+
+  /**
+   * Interface size. Applied as CSS zoom on the root so every px-based size
+   * scales together. Kept in the backend preferences (the native window forgets
+   * localStorage on close), with localStorage as a same-session cache that
+   * avoids a flash of the wrong size on load.
+   */
+  static applyUiScale(scale) {
+    const s = Number(scale);
+    if (!isFinite(s) || s <= 0) return;
+    document.documentElement.style.zoom = s === 1 ? '' : String(s);
+    try { localStorage.setItem('uiScale', String(s)); } catch (e) { /* private mode */ }
+  }
+
+  static async loadUiScale() {
+    let scale = 1;
+    try { scale = Number(localStorage.getItem('uiScale')) || 1; } catch (e) { /* ignore */ }
+    SettingsController.applyUiScale(scale);
+    const api = window.pywebview && window.pywebview.api;
+    if (api && api.ui_scale_get) {
+      try {
+        const res = await api.ui_scale_get();
+        if (res && res.ok) { scale = res.scale; SettingsController.applyUiScale(scale); }
+      } catch (e) { /* keep the cached value */ }
+    }
+    return scale;
+  }
+
+  async bindUiScale() {
+    const select = document.getElementById('uiScaleSelect');
+    if (!select) return;
+    const scale = await SettingsController.loadUiScale();
+    this.syncUiScaleSelect(select, scale);
+    select.addEventListener('change', async () => {
+      const value = Number(select.value);
+      SettingsController.applyUiScale(value);
+      const api = window.pywebview && window.pywebview.api;
+      if (api && api.ui_scale_set) {
+        try { await api.ui_scale_set(value); } catch (e) { /* applied for this session */ }
+      }
+    });
+  }
+
+  syncUiScaleSelect(select, scale) {
+    // A saved value from outside the preset list still needs to show up.
+    if (![...select.options].some(o => Number(o.value) === scale)) {
+      const opt = document.createElement('option');
+      opt.value = String(scale);
+      opt.textContent = `${Math.round(scale * 100)}%`;
+      select.appendChild(opt);
+    }
+    select.value = String(scale);
   }
 
   async open() {

@@ -74,7 +74,7 @@
   --panel-header-h: 34px;
   --transport-h: 44px;
   --timeline-h: 190px;
-  --side-w: 340px;
+  --side-w: 400px;
   --inspector-w: 320px;
 
   /* Shared by every timeline row. All three tracks must use exactly this
@@ -784,7 +784,12 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 }
 .panel-title svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 
-.panel-actions { display: flex; align-items: center; gap: 2px; }
+.panel-actions { display: flex; align-items: center; gap: 2px; min-width: 0; }
+/* Let the toolbar buttons give up a little width before the row spills out of
+   its panel; the panel title and badge keep theirs. */
+.panel-actions .btn-icon { flex: 0 1 24px; min-width: 18px; }
+.panel-header > * { flex-shrink: 0; }
+.panel-header > .panel-actions { flex-shrink: 1; }
 
 .panel-info {
   font-size: var(--fs-sm);
@@ -1045,6 +1050,25 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .program-frame.has-media > #videoPlayer { display: block; }
 .program-frame.has-media > #demoCanvas { display: none; }
 .program-frame > #demoCanvas.hidden { display: none; }
+
+/* Viewer zoom readout. Sits over the picture, so it carries its own scrim. */
+.viewer-zoom-badge {
+  position: absolute;
+  top: var(--s2);
+  right: var(--s2);
+  z-index: 6;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.viewer-zoom-badge:hover { border-color: var(--text-dim); }
+.viewer-zoom-badge.hidden { display: none; }
 
 /* Safe areas. The primary box is the line to stay inside; the tinted zones are
    where the platform's own interface sits, which is a stronger claim than
@@ -1783,6 +1807,8 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   overflow: hidden;
 }
 .modal-card-wide { width: 720px; }
+.modal-card-sm { width: 420px; }
+.modal-footer .modal-footer-left { margin-right: auto; }
 
 .modal-header {
   flex: 0 0 auto;
@@ -2174,12 +2200,12 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
    ========================================================================== */
 
 @media (max-width: 1400px) {
-  :root { --side-w: 300px; --inspector-w: 288px; }
+  :root { --side-w: 390px; --inspector-w: 288px; }
   .header-controls { gap: var(--s3); }
 }
 
 @media (max-width: 1180px) {
-  :root { --side-w: 264px; --inspector-w: 264px; }
+  :root { --side-w: 380px; --inspector-w: 264px; }
   .brand-badge { display: none; }
   .aspect-label, .project-res { display: none; }
 }

@@ -284,7 +284,7 @@ class AlphaExporter {
       `Frame rate : ${this.subManager.rate.label} fps (${this.subManager.rate.num}/${this.subManager.rate.den})`,
       '',
       'Every PNG is fully transparent except where a caption is drawn, so the',
-      'sequence drops straight onto a track above your footage in Premiere Pro.',
+      'sequence drops straight onto a track above your footage in your editor.',
       '',
       `To encode it to Apple ProRes ${profileName} with a real alpha channel, run:`,
       '',
@@ -292,7 +292,7 @@ class AlphaExporter {
       `         -c:v prores_ks -profile:v ${profile} -pix_fmt yuva444p10le \\`,
       '         -alpha_bits 16 -vendor apl0 subtitles_alpha.mov',
       '',
-      'Import the resulting .mov into Premiere Pro and place it on a video track',
+      'Import the resulting .mov into your editor and place it on a video track',
       'above your footage — the alpha channel is interpreted automatically.',
       ''
     ].join('\n');

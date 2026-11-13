@@ -171,6 +171,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // the same callbacks the project listens on — binding first would have the
   // app boot already claiming unsaved changes.
   bindProjectUI();
+  bindQuitGuard();
   settings.bind();
   bindKeyboardShortcuts();
 
@@ -412,6 +413,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Viewport Drag & Drop Media Upload
     const viewport = document.getElementById('viewportContainer');
+
+    // Alt+scroll (or a pinch) zooms the viewer at the cursor; once zoomed in,
+    // a plain scroll pans around the picture.
+    viewport.addEventListener('wheel', (e) => {
+      if (e.altKey || e.ctrlKey) {
+        e.preventDefault();
+        const dy = wheelPixels(e, e.deltaY);
+        if (dy) playerController.zoomViewAt(Math.exp(-dy * 0.0025), e.clientX, e.clientY);
+      } else if (playerController.viewZoom > 1) {
+        e.preventDefault();
+        playerController.panView(wheelPixels(e, e.deltaX), wheelPixels(e, e.deltaY));
+      }
+    }, { passive: false });
+
+    const zoomBadge = document.getElementById('viewerZoomBadge');
+    zoomBadge.addEventListener('click', () => playerController.resetView());
+    playerController.onViewZoom((zoom) => {
+      zoomBadge.textContent = `${Math.round(zoom * 100)}% · Fit`;
+      zoomBadge.classList.toggle('hidden', zoom <= 1);
+    });
     const dropzone = document.getElementById('dropzoneOverlay');
 
     viewport.addEventListener('dragover', (e) => {
@@ -1286,7 +1307,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // From a caption or a speaker, save the look it is actually drawn in,
       // and leave the ratio's style where it is.
       const source = panelStyle();
-      const suggested = source.name || 'My Premiere Style';
+      const suggested = source.name || 'My Style';
       const name = prompt('Enter a name for this preset:', suggested);
       if (!name) return;
       // Saving over a name already in the library replaces that entry, so
@@ -1826,6 +1847,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('btnZoomOut').addEventListener('click', () => zoomBy(-15));
     document.getElementById('btnZoomIn').addEventListener('click', () => zoomBy(15));
 
+    // Premiere's wheel: Alt+scroll zooms at the cursor, Shift+scroll pans
+    // along time. A trackpad pinch arrives as Ctrl+wheel, so it zooms too.
+    const timelineEl = document.getElementById('timelineContainer');
+    timelineEl.addEventListener('wheel', (e) => {
+      if (e.altKey || e.ctrlKey) {
+        e.preventDefault();
+        const dy = wheelPixels(e, e.deltaY);
+        if (dy) zoomTimelineAt(Math.exp(-dy * 0.0025), e.clientX);
+      } else if (e.shiftKey) {
+        e.preventDefault();
+        // macOS turns Shift+wheel into a horizontal delta itself; elsewhere it
+        // stays vertical.
+        timelineEl.scrollLeft += wheelPixels(e, e.deltaX || e.deltaY);
+      }
+    }, { passive: false });
+
     // Track Toggles
     const muteBtn = document.getElementById('btnAudioMute');
     muteBtn.addEventListener('click', () => {
@@ -1867,6 +1904,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     const next = Math.max(10, Math.min(200, parseFloat(zoomSlider.value) + delta));
     zoomSlider.value = next;
     timelineController.setZoom(next);
+  }
+
+  /** Zooms the timeline by a factor, keeping the moment under the cursor put. */
+  function zoomTimelineAt(factor, clientX) {
+    const zoomSlider = document.getElementById('timelineZoom');
+    const min = parseFloat(zoomSlider.min) || 10;
+    const max = parseFloat(zoomSlider.max) || 200;
+    const prev = timelineController.zoomLevel;
+    const next = Math.max(min, Math.min(max, prev * factor));
+    if (next === prev) return;
+
+    const container = document.getElementById('timelineContainer');
+    const ruler = document.getElementById('rulerCanvas');
+    const sec = (clientX - ruler.getBoundingClientRect().left) / prev;
+
+    zoomSlider.value = next;
+    timelineController.setZoom(next);
+    container.scrollLeft += ruler.getBoundingClientRect().left + sec * next - clientX;
+  }
+
+  /** A wheel delta in CSS pixels, whatever unit the device reported it in. */
+  function wheelPixels(e, delta) {
+    if (e.deltaMode === 1) return delta * 16;   // lines
+    if (e.deltaMode === 2) return delta * 400;  // pages
+    return delta;
   }
 
   // --- ProRes / Alpha Export ---
@@ -2029,7 +2091,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? 'Burns the captions into your footage and writes a small H.264 .mp4 to send for sign-off. '
           + 'Footage that does not match the chosen ratio is letterboxed or pillarboxed inside the frame.'
         : 'Renders the captions only, on a fully transparent background, at the project resolution. '
-          + 'Drop the result on a track above your footage in Premiere Pro — the alpha channel is read automatically.';
+          + 'Drop the result on a track above your footage in your editor — the alpha channel is read automatically.';
       document.getElementById('exportCodecRow').classList.toggle('hidden', review);
       document.getElementById('exportReviewScaleRow').classList.toggle('hidden', !review);
       updateRatioPicker();
@@ -3593,6 +3655,85 @@ document.addEventListener('DOMContentLoaded', async () => {
   function confirmDiscard(action) {
     if (!project.dirty) return true;
     return confirm(`"${project.name}" has unsaved changes. ${action} anyway?`);
+  }
+
+  // --- quit guard ---------------------------------------------------------
+  /**
+   * Offers to save before the app closes with unsaved work.
+   *
+   * In the desktop shell the backend cancels every close and calls
+   * window.requestAppClose(): returning true means "I'm asking the user", and
+   * the window then stays open until app_close() is called. In a browser all
+   * a page may do is ask for the browser's own leave-page prompt.
+   */
+  function bindQuitGuard() {
+    const modal = document.getElementById('unsavedModal');
+    const text = document.getElementById('unsavedModalText');
+    const saveBtn = document.getElementById('btnUnsavedSave');
+    let busy = false;
+
+    const isOpen = () => !modal.classList.contains('hidden');
+    const hide = () => modal.classList.add('hidden');
+
+    function closeApp() {
+      const api = window.pywebview && window.pywebview.api;
+      hide();
+      if (api && api.app_close) api.app_close();
+    }
+
+    window.requestAppClose = () => {
+      if (!project.dirty) return false;
+      if (!isOpen()) {
+        text.textContent = `"${project.name}" has unsaved changes. `
+          + 'They will be lost if you don\'t save them.';
+        modal.classList.remove('hidden');
+        saveBtn.focus();
+      }
+      return true;
+    };
+
+    async function save() {
+      if (busy) return;
+      busy = true;
+      try {
+        // Saving can still be cancelled at its file dialog — then stay open.
+        if (await saveProject() && !project.dirty) closeApp();
+      } finally {
+        busy = false;
+      }
+    }
+
+    saveBtn.addEventListener('click', save);
+    document.getElementById('btnUnsavedDiscard').addEventListener('click', closeApp);
+    document.getElementById('btnUnsavedCancel').addEventListener('click', hide);
+    modal.addEventListener('click', (e) => { if (e.target === modal) hide(); });
+
+    // Captured ahead of the editor's shortcuts so Space, Delete and the rest
+    // cannot reach the timeline behind the dialog.
+    window.addEventListener('keydown', (e) => {
+      if (!isOpen()) return;
+      if (e.key === 'Tab') return;
+      e.stopImmediatePropagation();
+      if (e.key === 'Escape') { e.preventDefault(); hide(); }
+      else if (e.key === 'Enter' && document.activeElement && document.activeElement.tagName === 'BUTTON') {
+        e.preventDefault();
+        document.activeElement.click();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        save();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        closeApp();  // Cmd+D: the macOS shortcut for "Don't Save"
+      } else {
+        e.preventDefault();
+      }
+    }, true);
+
+    window.addEventListener('beforeunload', (e) => {
+      if (window.bridgeMode === 'native' || !project.dirty) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
   }
 
   // --- autosave -----------------------------------------------------------

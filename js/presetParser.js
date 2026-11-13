@@ -17,7 +17,7 @@ class PresetParser {
     this.defaultPresets = {
       classic_yellow: {
         id: 'classic_yellow',
-        name: 'Classic Film Yellow (Premiere Pro)',
+        name: 'Classic Film Yellow',
         fontFamily: 'Inter',
         fontSize: 66,
         fontWeightBold: true,
